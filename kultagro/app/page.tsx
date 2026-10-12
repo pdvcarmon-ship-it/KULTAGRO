@@ -758,6 +758,9 @@ interface ParcelaGuardada {
   secanoRegadio?: 'SEC' | 'ASP' | 'LOC' | 'GRA' | ''
   tipoCultivoAmbiente?: 'AL' | 'M' | 'BP' | 'INV' | ''
   sistAsesoramientoGip?: 'AE' | 'PI' | 'CP' | 'ATRIAS' | 'AS' | 'NO' | ''
+  // Datos para los límites normativos del Plan de abonado (RD 1051/2022 / RD 47/2022)
+  pendienteMedia?: number          // % de pendiente media del recinto
+  zonaVulnerable?: boolean         // zona vulnerable a la contaminación por nitratos
 }
 
 // "CULTIVO (VARIEDAD)" si hay variedad, o solo "CULTIVO" si no — para no cambiar nada
@@ -902,6 +905,8 @@ export default function Home() {
   const [formSecanoRegadio, setFormSecanoRegadio] = useState<'' | 'SEC' | 'ASP' | 'LOC' | 'GRA'>('')
   const [formTipoCultivoAmbiente, setFormTipoCultivoAmbiente] = useState<'' | 'AL' | 'M' | 'BP' | 'INV'>('')
   const [formSistAsesoramientoGip, setFormSistAsesoramientoGip] = useState<'' | 'AE' | 'PI' | 'CP' | 'ATRIAS' | 'AS' | 'NO'>('')
+  const [formPendienteMedia, setFormPendienteMedia] = useState('')        // % (texto del input)
+  const [formZonaVulnerable, setFormZonaVulnerable] = useState(false)
 
   // - Tratamientos -
   const [tratamientos, setTratamientos] = useState<Tratamiento[]>([])
@@ -1278,6 +1283,8 @@ export default function Home() {
             secanoRegadio: p.secano_regadio || undefined,
             tipoCultivoAmbiente: p.tipo_cultivo_ambiente || undefined,
             sistAsesoramientoGip: p.sist_asesoramiento_gip || undefined,
+            pendienteMedia: p.pendiente_media != null ? Number(p.pendiente_media) : undefined,
+            zonaVulnerable: !!p.zona_vulnerable,
           }))
           setMisParcelas(parcelasMapeadas)
         }
@@ -1747,6 +1754,7 @@ export default function Home() {
     setFormSecanoRegadio('')
     setFormTipoCultivoAmbiente('')
     setFormSistAsesoramientoGip('')
+    setFormPendienteMedia(''); setFormZonaVulnerable(false)
     setFormError('')
     setParcelaEditar(null)
     // Generar preview del satélite Esri recortado a la parcela
@@ -4905,6 +4913,8 @@ export default function Home() {
       secanoRegadio: formSecanoRegadio || undefined,
       tipoCultivoAmbiente: formTipoCultivoAmbiente || undefined,
       sistAsesoramientoGip: formSistAsesoramientoGip || undefined,
+      pendienteMedia: formPendienteMedia.trim() !== '' && isFinite(Number(formPendienteMedia.replace(',', '.'))) ? Number(formPendienteMedia.replace(',', '.')) : undefined,
+      zonaVulnerable: formZonaVulnerable,
     }
 
     let nuevaLista: ParcelaGuardada[]
@@ -4928,6 +4938,9 @@ export default function Home() {
         secano_regadio: nueva.secanoRegadio || null,
         tipo_cultivo_ambiente: nueva.tipoCultivoAmbiente || null,
         sist_asesoramiento_gip: nueva.sistAsesoramientoGip || null,
+        pendiente_media: nueva.pendienteMedia ?? null,
+        zona_vulnerable: !!nueva.zonaVulnerable,
+        zona_vulnerable_fuente: nueva.zonaVulnerable ? 'manual' : null,
       })
     } catch (e) { console.error('Error guardando parcela:', e) }
 
@@ -4965,6 +4978,8 @@ export default function Home() {
     setFormSecanoRegadio(p.secanoRegadio || '')
     setFormTipoCultivoAmbiente(p.tipoCultivoAmbiente || '')
     setFormSistAsesoramientoGip(p.sistAsesoramientoGip || '')
+    setFormPendienteMedia(p.pendienteMedia != null ? String(p.pendienteMedia) : '')
+    setFormZonaVulnerable(!!p.zonaVulnerable)
     setFormError('')
     setCultivoAnteriorGuardado(false)
     setImagenPreviewForm(p.imagenPreview || (p.geojson ? getEsriPreviewUrl(p.geojson) : null))
@@ -6212,6 +6227,18 @@ export default function Home() {
                       </select>
                     </div>
                   ))}
+
+                  {/* Datos para los límites normativos del Plan de abonado — opcionales */}
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Pendiente media (%)</label>
+                    <input type="number" min="0" step="0.1" value={formPendienteMedia} onChange={e => setFormPendienteMedia(e.target.value)} placeholder="Ej: 8"
+                      style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }}/>
+                    <div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>Se usa en el Plan de abonado para avisar de métodos de aplicación no permitidos según la pendiente.</div>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={formZonaVulnerable} onChange={e => setFormZonaVulnerable(e.target.checked)} />
+                    Zona vulnerable a la contaminación por nitratos
+                  </label>
 
 
                   {/* Finca */}

@@ -5,13 +5,14 @@ import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabaseClient'
 import type { PermisoClave } from '../lib/permisos'
 import { descargarFichaAbonado } from '../lib/fichaAbonado'
+import { METALES_PRODUCTO, METALES_SUELO, ETIQUETA_METAL, METODOS_APLICACION, aporteMetalesGHa, metalesSueloAfectados, evaluarAporte, type Metal, type MetalesMapa, type AporteHistorico, type AvisoNormativo } from '../lib/limitesNormativos'
 import { descargarCuadernoAbonado, NUTRIENTES_ORDEN, type SeccionTabla, type ParcelaAbonadoFicha, type AbonoBloqueFicha } from '../lib/cuadernoAbonado'
 
 // - Tipos mínimos compartidos con page.tsx (duplicados a propósito para no acoplar) -
 interface FincaLite { id: string; nombre: string }
 interface CampanaLite { id: string; nombre: string; fechaInicio?: string; fechaFin?: string }
 interface RecintoLite { referencia: string; supHa: number; provincia?: string; municipio?: string; agregado?: string; zona?: string; poligono?: string; parcela?: string; recinto?: string; usoSigpac?: string }
-interface ParcelaLite { id: string; nombre: string; cultivo: string; variedad?: string; fincaId?: string; referenciaSigpac?: string; supHa?: number; recintos?: RecintoLite[]; secanoRegadio?: string; tipoCultivoAmbiente?: string; sistAsesoramientoGip?: string }
+interface ParcelaLite { id: string; nombre: string; cultivo: string; variedad?: string; fincaId?: string; referenciaSigpac?: string; supHa?: number; recintos?: RecintoLite[]; secanoRegadio?: string; tipoCultivoAmbiente?: string; sistAsesoramientoGip?: string; pendienteMedia?: number; zonaVulnerable?: boolean }
 interface HistoricoCultivoLite { parcelaId: string; cultivo: string; campanaId?: string }
 interface EquipoLite { id: string; tipo: string; subtipo?: string; nombre: string; titularidad?: string; fincaId?: string; nroRoma?: string; dniCif?: string; fechaAdquisicion?: string; fechaUltimaInspeccion?: string }
 interface PersonalLite { id: string; nombre: string; activo: boolean; permisos?: Record<string, boolean>; nroRopo?: string; dni?: string; nivelCapacitacion?: string; funciones?: string[]; fincaId?: string; fincaIds?: string[] }
@@ -114,6 +115,7 @@ interface AnalisisSuelo {
   kBase: BaseNutriente
   ph?: number
   ce?: number
+  metales?: MetalesMapa        // metales pesados del suelo, mg/kg ms (RD 1051/2022 Anexo IV.B)
 }
 
 interface NecesidadCultivo {
@@ -139,6 +141,21 @@ interface AbonoCatalogo {
   unidades: MapaUnidades
   pBase: BaseNutriente
   kBase: BaseNutriente
+  metales?: MetalesMapa        // metales pesados del producto, mg/kg materia seca (Anexo IV.A)
+  materiaSecaPct?: number      // % de materia seca (por defecto 100)
+}
+
+// Fotografía fija de los datos normativos usados al guardar un plan
+interface NormativaPlan {
+  metodo: string
+  tecnicaAntierosion: boolean
+  colindante: boolean
+  abonoMetales: MetalesMapa
+  materiaSecaPct: number
+  pendienteMedia?: number
+  zonaVulnerable: boolean
+  sueloAfectados: Metal[]
+  avisos: string[]
 }
 
 interface PlanAbonado {
@@ -168,6 +185,7 @@ interface PlanAbonado {
   ejecuta?: string
   fechaAplicacion?: string
   equipoIds: string[]
+  normativa?: NormativaPlan
 }
 
 const normalizarPK = (nut: Nutrientes, pBase: BaseNutriente, kBase: BaseNutriente): Nutrientes => ({
@@ -285,6 +303,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         nutrientes: { ...NUTRIENTES_VACIO, ...(a.nutrientes || {}) }, unidades: a.unidades || {},
         pBase: a.p_base || 'elemental', kBase: a.k_base || 'elemental',
         ph: a.ph != null ? Number(a.ph) : undefined, ce: a.ce != null ? Number(a.ce) : undefined,
+        metales: a.metales || {},
       })))
       if (nRes.data) setNecesidades(nRes.data.map((n: any) => ({
         id: n.id, cultivo: n.cultivo, variedad: n.variedad || undefined, objetivoRendimiento: n.objetivo_rendimiento || undefined,
@@ -296,6 +315,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         tipo: ab.tipo || '', estadoFisico: ab.estado_fisico || '', densidad: ab.densidad != null ? Number(ab.densidad) : undefined,
         nutrientes: { ...NUTRIENTES_VACIO, ...(ab.nutrientes || {}) }, unidades: ab.unidades || {},
         pBase: ab.p_base || 'elemental', kBase: ab.k_base || 'elemental',
+        metales: ab.metales || {}, materiaSecaPct: ab.materia_seca_pct != null ? Number(ab.materia_seca_pct) : undefined,
       })))
       if (pRes.data) setPlanes(pRes.data.map((pl: any) => ({
         id: pl.id, campanaId: pl.campana_id || '', fincaId: pl.finca_id || '', parcelaId: pl.parcela_id || '',
@@ -313,6 +333,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         balance: { ...NUTRIENTES_VACIO, ...(pl.balance || {}) },
         recomienda: pl.recomienda || undefined, ejecuta: pl.ejecuta || undefined, fechaAplicacion: pl.fecha_aplicacion || undefined,
         equipoIds: Array.isArray(pl.equipo_ids) ? pl.equipo_ids : [],
+        normativa: pl.normativa || undefined,
       })))
       setCargado(true)
     })()
@@ -332,6 +353,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
   const [aKBase, setAKBase] = useState<BaseNutriente>('elemental')
   const [aPh, setAPh] = useState<number | undefined>(undefined)
   const [aCe, setACe] = useState<number | undefined>(undefined)
+  const [aMetales, setAMetales] = useState<MetalesMapa>({})
   const [aError, setAError] = useState('')
 
   const abrirFormAnalisis = (a?: AnalisisSuelo) => {
@@ -343,7 +365,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
     setANut(a?.nutrientes ? { ...a.nutrientes } : { ...NUTRIENTES_VACIO })
     setAUnidades(a?.unidades ? { ...a.unidades } : { ...UNIDADES_VACIO })
     setAPBase(a?.pBase || 'elemental'); setAKBase(a?.kBase || 'elemental')
-    setAPh(a?.ph); setACe(a?.ce); setAError(''); setFormAnalisis(true)
+    setAPh(a?.ph); setACe(a?.ce); setAMetales(a?.metales ? { ...a.metales } : {}); setAError(''); setFormAnalisis(true)
   }
 
   const guardarAnalisis = async () => {
@@ -352,6 +374,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
     const nuevo: AnalisisSuelo = {
       id: analisisEditar?.id || String(Date.now()), parcelaIds: aParcelaIds, fechaMuestra: aFecha, laboratorio: aLab.trim(),
       materiaOrganica: aMO, nutrientes: aNut, unidades: aUnidades, pBase: aPBase, kBase: aKBase, ph: aPh, ce: aCe,
+      metales: aMetales,
     }
     const lista = analisisEditar ? analisis.map(a => a.id === analisisEditar.id ? nuevo : a) : [nuevo, ...analisis]
     setAnalisis(lista)
@@ -360,6 +383,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         id: nuevo.id, user_id: session.user.id, parcela_ids: nuevo.parcelaIds, fecha_muestra: nuevo.fechaMuestra,
         laboratorio: nuevo.laboratorio || null, materia_organica: nuevo.materiaOrganica ?? null,
         nutrientes: nuevo.nutrientes, unidades: nuevo.unidades, p_base: nuevo.pBase, k_base: nuevo.kBase, ph: nuevo.ph ?? null, ce: nuevo.ce ?? null,
+        metales: nuevo.metales || {},
       })
       if (error) { setAError('No se pudo guardar: ' + error.message); return }
     } catch (e) { setAError('No se pudo guardar en la base de datos.'); return }
@@ -434,12 +458,15 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
       setPAbonoId(b.abonoId || ''); setPDosis(b.dosisKgHa || 0)
       setPRecomienda(b.recomienda || ''); setPEjecuta(b.ejecuta || '')
       setPFechaAplicacion(b.fechaAplicacion || ''); setPEquipoIds(b.equipoIds || [])
+      setPMetodo(b.metodo || ''); setPTecnicaAntierosion(!!b.tecnicaAntierosion); setPColindante(!!b.colindante)
       if (b.necNuevaDraft) setNecNuevaDraft(b.necNuevaDraft)
       if (b.necNuevaDraftUnidades) setNecNuevaDraftUnidades(b.necNuevaDraftUnidades)
       if (b.abonoNuevoNombre) setAbonoNuevoNombre(b.abonoNuevoNombre)
       if (b.abonoNuevoTipo) setAbonoNuevoTipo(b.abonoNuevoTipo)
       if (b.abonoNuevoNut) setAbonoNuevoNut(b.abonoNuevoNut)
       if (b.abonoNuevoUnidades) setAbonoNuevoUnidades(b.abonoNuevoUnidades)
+      if (b.abonoNuevoMetales) setAbonoNuevoMetales(b.abonoNuevoMetales)
+      if (b.abonoNuevoMateriaSeca != null) setAbonoNuevoMateriaSeca(b.abonoNuevoMateriaSeca)
     }
     setFormPlan(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -464,6 +491,8 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
   const [abUnidades, setAbUnidades] = useState<MapaUnidades>({ ...UNIDADES_VACIO })
   const [abPBase, setAbPBase] = useState<BaseNutriente>('elemental')
   const [abKBase, setAbKBase] = useState<BaseNutriente>('elemental')
+  const [abMetales, setAbMetales] = useState<MetalesMapa>({})
+  const [abMateriaSeca, setAbMateriaSeca] = useState<number | undefined>(undefined)
   const [abError, setAbError] = useState('')
 
   const abrirFormAbono = (ab?: AbonoCatalogo, nombrePrefill?: string) => {
@@ -472,10 +501,11 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
     setAbTipo(ab?.tipo || ''); setAbEstado(ab?.estadoFisico || ''); setAbDensidad(ab?.densidad)
     setAbNut(ab?.nutrientes ? { ...ab.nutrientes } : { ...NUTRIENTES_VACIO })
     setAbUnidades(ab?.unidades ? { ...ab.unidades } : { ...UNIDADES_VACIO })
-    setAbPBase(ab?.pBase || 'elemental'); setAbKBase(ab?.kBase || 'elemental'); setAbError(''); setFormAbono(true)
+    setAbPBase(ab?.pBase || 'elemental'); setAbKBase(ab?.kBase || 'elemental')
+    setAbMetales(ab?.metales ? { ...ab.metales } : {}); setAbMateriaSeca(ab?.materiaSecaPct); setAbError(''); setFormAbono(true)
   }
 
-  const guardarAbono = async (override?: { nombre: string; tipo: 'organico' | 'inorganico'; nutrientes: Nutrientes; unidades: MapaUnidades }): Promise<AbonoCatalogo | null> => {
+  const guardarAbono = async (override?: { nombre: string; tipo: 'organico' | 'inorganico'; nutrientes: Nutrientes; unidades: MapaUnidades; metales?: MetalesMapa; materiaSecaPct?: number }): Promise<AbonoCatalogo | null> => {
     const nombre = override?.nombre ?? abNombre
     const tipo = override?.tipo ?? abTipo
     const nutrientes = override?.nutrientes ?? abNut
@@ -488,6 +518,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
       numRegistro: override ? undefined : (abRegistro.trim() || undefined),
       tipo, estadoFisico: override ? '' : abEstado, densidad: override ? undefined : abDensidad,
       nutrientes, unidades, pBase: override ? 'elemental' : abPBase, kBase: override ? 'elemental' : abKBase,
+      metales: override ? (override.metales || {}) : abMetales, materiaSecaPct: override ? override.materiaSecaPct : abMateriaSeca,
     }
     const lista = abonoEditar ? abonos.map(a => a.id === abonoEditar.id ? nuevo : a) : [nuevo, ...abonos]
     setAbonos(lista)
@@ -496,6 +527,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         id: nuevo.id, user_id: session.user.id, nombre: nuevo.nombre, fabricante: nuevo.fabricante || null,
         num_registro: nuevo.numRegistro || null, tipo: nuevo.tipo, estado_fisico: nuevo.estadoFisico || null,
         densidad: nuevo.densidad ?? null, nutrientes: nuevo.nutrientes, unidades: nuevo.unidades, p_base: nuevo.pBase, k_base: nuevo.kBase,
+        metales: nuevo.metales || {}, materia_seca_pct: nuevo.materiaSecaPct ?? null,
       })
       if (error) { setAbError('No se pudo guardar: ' + error.message); return null }
     } catch (e) { setAbError('No se pudo guardar en la base de datos.'); return null }
@@ -525,6 +557,9 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
   const [pEjecuta, setPEjecuta] = useState('')
   const [pFechaAplicacion, setPFechaAplicacion] = useState('')
   const [pEquipoIds, setPEquipoIds] = useState<string[]>([])
+  const [pMetodo, setPMetodo] = useState('')
+  const [pTecnicaAntierosion, setPTecnicaAntierosion] = useState(false)
+  const [pColindante, setPColindante] = useState(false)
   const [pError, setPError] = useState('')
   // Borrador de necesidad "al vuelo" cuando el cultivo no tiene ficha
   const [necNuevaDraft, setNecNuevaDraft] = useState<Nutrientes>({ ...NUTRIENTES_VACIO })
@@ -534,6 +569,8 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
   const [abonoNuevoTipo, setAbonoNuevoTipo] = useState<'organico' | 'inorganico' | ''>('')
   const [abonoNuevoNut, setAbonoNuevoNut] = useState<Nutrientes>({ ...NUTRIENTES_VACIO })
   const [abonoNuevoUnidades, setAbonoNuevoUnidades] = useState<MapaUnidades>({ ...UNIDADES_VACIO })
+  const [abonoNuevoMetales, setAbonoNuevoMetales] = useState<MetalesMapa>({})
+  const [abonoNuevoMateriaSeca, setAbonoNuevoMateriaSeca] = useState<number | undefined>(undefined)
 
   const cultivoDeParcelaEnCampana = (parcelaId: string, campanaId: string): string => {
     const hist = historicoCultivos.find(h => h.parcelaId === parcelaId && h.campanaId === campanaId)
@@ -598,6 +635,31 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
   // factor (×2,29 en P, ×1,205 en K), y se avisa junto a esos dos números.
   const aporteAbonoNormalizado: Nutrientes = normalizarPK(aporteAbono, composicionAbonoBase.p, composicionAbonoBase.k)
 
+  // ---- Límites normativos (RD 1051/2022 y RD 47/2022): solo AVISAN, nunca bloquean el guardado ----
+  const parcelaSel = pParcelaId ? misParcelas.find(p => p.id === pParcelaId) : undefined
+  const sueloNormativo = metalesSueloAfectados(analisisVigente?.metales, analisisVigente?.ph)
+  const abonoTipoActivo: 'organico' | 'inorganico' | '' = pAbonoId ? (abonoSel?.tipo || '') : abonoNuevoTipo
+  const abonoMetalesActivo: MetalesMapa = pAbonoId ? (abonoSel?.metales || {}) : abonoNuevoMetales
+  const materiaSecaActiva = pAbonoId ? (abonoSel?.materiaSecaPct || 100) : (abonoNuevoMateriaSeca || 100)
+  const fechaEvaluacion = pFechaAplicacion || new Date().toISOString().slice(0, 10)
+  const historicoParcela: AporteHistorico[] = pParcelaId
+    ? planes.filter(pl => pl.parcelaId === pParcelaId).map(pl => ({
+        fecha: pl.fechaAplicacion || pl.fecha,
+        metalesGHa: pl.normativa ? aporteMetalesGHa(pl.normativa.abonoMetales || {}, pl.dosisKgHa, pl.normativa.materiaSecaPct || 100) : {},
+        nKgHa: Number(pl.aporteReal?.n) || 0,
+        organico: pl.abonoTipo === 'organico',
+      }))
+    : []
+  const avisosNormativos: AvisoNormativo[] = parcelaSel && (pAbonoId || abonoNuevoNombre.trim()) && pDosis > 0
+    ? evaluarAporte({
+        fechaAplicacion: fechaEvaluacion, abonoTipo: abonoTipoActivo, dosisKgHa: pDosis,
+        metalesProducto: abonoMetalesActivo, materiaSecaPct: materiaSecaActiva, aporteNKgHa: Number(aporteAbono.n) || 0,
+        sueloAfectados: sueloNormativo.afectados, pendienteMedia: parcelaSel.pendienteMedia, zonaVulnerable: !!parcelaSel.zonaVulnerable,
+        supHa: parcelaSel.supHa || 0, colindanteMismaExplotacion: pColindante, metodo: pMetodo, tecnicaAntierosion: pTecnicaAntierosion,
+        historico: historicoParcela,
+      })
+    : []
+
   // Recalcula el aporte a partir de una composición+unidades+dosis ya guardadas
   // (se usa para "Ver" y "Descargar ficha" de un plan ya guardado, para que no
   // dependa de si el campo aporte_real llegó a guardarse bien en su momento).
@@ -618,8 +680,10 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
     setPCampanaId(''); setPFincaId(''); setPParcelaId(''); setPModoObjetivo('mantener')
     setPSueloObjetivo({ ...NUTRIENTES_VACIO }); setPSueloObjetivoUnidades({ ...UNIDADES_VACIO }); setPAbonoId(''); setPDosis(0)
     setPRecomienda(''); setPEjecuta(''); setPFechaAplicacion(''); setPEquipoIds([])
+    setPMetodo(''); setPTecnicaAntierosion(false); setPColindante(false)
     setNecNuevaDraft({ ...NUTRIENTES_VACIO }); setNecNuevaDraftUnidades({ ...UNIDADES_VACIO })
     setAbonoNuevoNombre(''); setAbonoNuevoTipo(''); setAbonoNuevoNut({ ...NUTRIENTES_VACIO }); setAbonoNuevoUnidades({ ...UNIDADES_VACIO })
+    setAbonoNuevoMetales({}); setAbonoNuevoMateriaSeca(undefined)
     setPError('')
   }
 
@@ -637,7 +701,8 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         modoObjetivo: pModoObjetivo, sueloObjetivo: pSueloObjetivo, sueloObjetivoUnidades: pSueloObjetivoUnidades,
         abonoId: pAbonoId, dosisKgHa: pDosis, recomienda: pRecomienda, ejecuta: pEjecuta,
         fechaAplicacion: pFechaAplicacion, equipoIds: pEquipoIds,
-        necNuevaDraft, necNuevaDraftUnidades, abonoNuevoNombre, abonoNuevoTipo, abonoNuevoNut, abonoNuevoUnidades,
+        metodo: pMetodo, tecnicaAntierosion: pTecnicaAntierosion, colindante: pColindante,
+        necNuevaDraft, necNuevaDraftUnidades, abonoNuevoNombre, abonoNuevoTipo, abonoNuevoNut, abonoNuevoUnidades, abonoNuevoMetales, abonoNuevoMateriaSeca,
       }
       const idTarea = tareaOrigenId || String(Date.now())
       try {
@@ -673,7 +738,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
     let abonoNumRegistroFinal = abonoSel?.numRegistro || ''
     let abonoTipoFinal: 'organico' | 'inorganico' | '' = abonoSel?.tipo || ''
     if (!pAbonoId && abonoNuevoNombre.trim()) {
-      const creado = await guardarAbono({ nombre: abonoNuevoNombre, tipo: (abonoNuevoTipo || 'inorganico'), nutrientes: abonoNuevoNut, unidades: abonoNuevoUnidades })
+      const creado = await guardarAbono({ nombre: abonoNuevoNombre, tipo: (abonoNuevoTipo || 'inorganico'), nutrientes: abonoNuevoNut, unidades: abonoNuevoUnidades, metales: abonoNuevoMetales, materiaSecaPct: abonoNuevoMateriaSeca })
       abonoUsadoId = creado?.id || ''
       abonoNombreFinal = creado?.nombre || abonoNuevoNombre
       abonoFabricanteFinal = creado?.fabricante || ''
@@ -691,6 +756,12 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
       abonoComposicion: composicionAbonoActiva, abonoUnidades: composicionAbonoUnidades, dosisKgHa: pDosis, aporteReal: aporteAbono, balance,
       recomienda: pRecomienda || undefined, ejecuta: pEjecuta || undefined,
       fechaAplicacion: pFechaAplicacion || undefined, equipoIds: pEquipoIds,
+      normativa: {
+        metodo: pMetodo, tecnicaAntierosion: pTecnicaAntierosion, colindante: pColindante,
+        abonoMetales: abonoMetalesActivo, materiaSecaPct: materiaSecaActiva,
+        pendienteMedia: parcelaSel?.pendienteMedia, zonaVulnerable: !!parcelaSel?.zonaVulnerable,
+        sueloAfectados: sueloNormativo.afectados, avisos: avisosNormativos.map(a => a.texto),
+      },
     }
     setPlanes([nuevo, ...planes])
     try {
@@ -704,7 +775,7 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
         abono_composicion: nuevo.abonoComposicion, abono_unidades: nuevo.abonoUnidades, dosis_kg_ha: nuevo.dosisKgHa,
         aporte_real: nuevo.aporteReal, balance: nuevo.balance,
         recomienda: nuevo.recomienda || null, ejecuta: nuevo.ejecuta || null, fecha_aplicacion: nuevo.fechaAplicacion || null,
-        equipo_ids: nuevo.equipoIds,
+        equipo_ids: nuevo.equipoIds, normativa: nuevo.normativa,
       })
       if (error) { setPError('No se pudo guardar el plan: ' + error.message); return }
     } catch (e) { setPError('No se pudo guardar el plan en la base de datos.'); return }
@@ -976,6 +1047,14 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
                   <span>pH: {analisisVigente.ph ?? '—'}</span><span>CE: {analisisVigente.ce ?? '—'} dS/m</span>
                 </div>
                 <FilaNutrientes valores={sueloInicialNorm} soloLectura />
+                {sueloNormativo.faltaPh && (
+                  <div style={{ fontSize: 10, color: 'var(--amber)', fontFamily: 'var(--mono)', marginTop: 8 }}>⚠ El análisis tiene metales pesados pero no pH: no se pueden comparar con los límites del suelo (RD 1051/2022, Anexo IV.B).</div>
+                )}
+                {sueloNormativo.afectados.length > 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--amber)', fontFamily: 'var(--mono)', marginTop: 8, lineHeight: 1.5 }}>
+                    ⚠ Suelo afectado: supera el límite del RD 1051/2022 (Anexo IV.B, pH {analisisVigente.ph}) en {sueloNormativo.afectados.map(m => ETIQUETA_METAL[m]).join(', ')}. Se aplican los límites más estrictos para esos metales.
+                  </div>
+                )}
               </div>
 
               {/* 4.2 Necesidades del cultivo */}
@@ -1043,10 +1122,58 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
                     </div>
                     <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 4 }}>Composición (elige la unidad de cada nutriente)</div>
                     <FilaNutrientesUnidad valores={abonoNuevoNut} unidades={abonoNuevoUnidades} opciones={OPCIONES_CONCENTRACION} unidadPorDefecto="pct" baseEtiqueta="g/kg de producto" onChangeValor={setAbonoNuevoNut} onChangeUnidad={setAbonoNuevoUnidades} />
+                    <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', margin: '8px 0 4px' }}>Metales pesados (mg/kg de materia seca) y materia seca — opcional, para comprobar los límites del RD 1051/2022</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px,1fr))', gap: 6 }}>
+                      <div><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', textAlign: 'center' }}>Mat. seca %</div>
+                        <input type="number" step="any" min="0" max="100" value={abonoNuevoMateriaSeca ?? ''} onChange={e => setAbonoNuevoMateriaSeca(e.target.value === '' ? undefined : Number(e.target.value))} style={inputStyle()} /></div>
+                      {METALES_PRODUCTO.map(m => (
+                        <div key={m}><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', textAlign: 'center' }}>{ETIQUETA_METAL[m]}</div>
+                          <input type="number" step="any" min="0" value={abonoNuevoMetales[m] ?? ''} onChange={e => setAbonoNuevoMetales({ ...abonoNuevoMetales, [m]: e.target.value === '' ? undefined : Number(e.target.value) })} style={inputStyle()} /></div>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 4 }}>Aporte real (kg/ha), calculado a partir de g/kg de producto × dosis</div>
                 <FilaNutrientes valores={aporteAbono} soloLectura />
+
+                {/* Método de aplicación (límites por pendiente) */}
+                <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 6 }}>Método de aplicación (se comprueba contra la pendiente de la parcela)</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+                    <select value={pMetodo} onChange={e => setPMetodo(e.target.value)} style={inputStyle()}>
+                      {METODOS_APLICACION.map(m => <option key={m.valor} value={m.valor}>{m.etiqueta}</option>)}
+                    </select>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text)', marginTop: 8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={pTecnicaAntierosion} onChange={e => setPTecnicaAntierosion(e.target.checked)} />
+                    Se usa técnica antierosión (bancales, terrazas, laboreo de conservación) o se aplica enterrado/en cobertera
+                  </label>
+                  {parcelaSel && (parcelaSel.supHa || 0) < 1 && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text)', marginTop: 6, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={pColindante} onChange={e => setPColindante(e.target.checked)} />
+                      Recinto colindante con otro de la misma explotación
+                    </label>
+                  )}
+                  {parcelaSel && (
+                    <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 6, lineHeight: 1.5 }}>
+                      Parcela: pendiente {parcelaSel.pendienteMedia != null ? `${fmt(parcelaSel.pendienteMedia)} %` : 'sin indicar'} · {parcelaSel.zonaVulnerable ? 'zona vulnerable a nitratos' : 'fuera de zona vulnerable'}.
+                      {(parcelaSel.pendienteMedia == null) && ' Indica la pendiente en la ficha de la parcela (MIS PARCELAS) para activar la comprobación por pendiente.'}
+                    </div>
+                  )}
+                </div>
+
+                {/* Avisos normativos: solo informan, no impiden guardar */}
+                {(pAbonoId ? !!abonoSel : !!abonoNuevoNombre.trim()) && Object.values(abonoMetalesActivo).every(v => v == null) && (
+                  <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 10, lineHeight: 1.5 }}>ⓘ Este abono no tiene metales pesados indicados: no se pueden comprobar los límites de metales (RD 1051/2022).</div>
+                )}
+                {avisosNormativos.length > 0 && (
+                  <div style={{ marginTop: 10, border: '1px solid rgba(255,180,84,0.5)', background: 'rgba(255,180,84,0.08)', borderRadius: 6, padding: '8px 10px' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#8A4B12', fontFamily: 'var(--mono)', marginBottom: 4 }}>⚠ AVISOS NORMATIVOS (puedes guardar igualmente; la responsabilidad legal es del titular)</div>
+                    {avisosNormativos.map((a, i) => (
+                      <div key={i} style={{ fontSize: 10, color: 'var(--text)', fontFamily: 'var(--mono)', lineHeight: 1.5, marginTop: 3 }}>• {a.texto}</div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* 4.5 Balance */}
@@ -1189,6 +1316,13 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
               </div>
               <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 4 }}>Nutrientes (kg/ha)</div>
               <FilaNutrientesUnidad valores={aNut} unidades={aUnidades} opciones={OPCIONES_CANTIDAD} unidadPorDefecto="kg_ha" baseEtiqueta="kg/ha" onChangeValor={setANut} onChangeUnidad={setAUnidades} />
+              <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 8 }}>Metales pesados del suelo (mg/kg de materia seca, 25 cm) — opcional; se comparan con los límites del RD 1051/2022 según el pH</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px,1fr))', gap: 6 }}>
+                {METALES_SUELO.map(m => (
+                  <div key={m}><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', textAlign: 'center' }}>{ETIQUETA_METAL[m]}</div>
+                    <input type="number" step="any" min="0" value={aMetales[m] ?? ''} onChange={e => setAMetales({ ...aMetales, [m]: e.target.value === '' ? undefined : Number(e.target.value) })} style={inputStyle()} /></div>
+                ))}
+              </div>
               {aError && <div style={{ color: 'var(--red)', fontSize: 11, fontFamily: 'var(--mono)' }}>{aError}</div>}
               <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 <button onClick={guardarAnalisis} style={{ padding: '8px 16px', borderRadius: 8, background: 'var(--green)', border: 'none', color: 'var(--bg)', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>GUARDAR</button>
@@ -1298,6 +1432,17 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
                 <div><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>Base P</div><SelectorBase valor={abPBase} onChange={setAbPBase} /></div>
                 <div><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>Base K</div><SelectorBase valor={abKBase} onChange={setAbKBase} /></div>
               </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+                <div><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>Materia seca (%) — vacío = 100 %</div>
+                  <input type="number" step="any" min="0" max="100" value={abMateriaSeca ?? ''} onChange={e => setAbMateriaSeca(e.target.value === '' ? undefined : Number(e.target.value))} style={inputStyle()} /></div>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 4 }}>Metales pesados del producto (mg/kg de materia seca) — opcional; se comparan con los límites del RD 1051/2022</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px,1fr))', gap: 6 }}>
+                {METALES_PRODUCTO.map(m => (
+                  <div key={m}><div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', textAlign: 'center' }}>{ETIQUETA_METAL[m]}</div>
+                    <input type="number" step="any" min="0" value={abMetales[m] ?? ''} onChange={e => setAbMetales({ ...abMetales, [m]: e.target.value === '' ? undefined : Number(e.target.value) })} style={inputStyle()} /></div>
+                ))}
+              </div>
               <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 4 }}>Composición garantizada (elige la unidad de cada nutriente)</div>
               <FilaNutrientesUnidad valores={abNut} unidades={abUnidades} opciones={OPCIONES_CONCENTRACION} unidadPorDefecto="pct" baseEtiqueta="g/kg de producto" onChangeValor={setAbNut} onChangeUnidad={setAbUnidades} />
               {abError && <div style={{ color: 'var(--red)', fontSize: 11, fontFamily: 'var(--mono)' }}>{abError}</div>}
@@ -1377,6 +1522,12 @@ export default function AbonadoTab({ session, fincas, misParcelas, campanas, his
                 <div><b>Abono:</b> {planVer.abonoNombre}{planVer.abonoFabricante ? ` (${planVer.abonoFabricante})` : ''} · <b>Dosis:</b> {planVer.dosisKgHa} kg/ha</div>
                 <div><b>Recomienda:</b> {personal.find(p => p.id === planVer.recomienda)?.nombre || '—'} &nbsp; <b>Ejecuta:</b> {personal.find(p => p.id === planVer.ejecuta)?.nombre || '—'}</div>
                 <div><b>Fecha de aplicación:</b> {planVer.fechaAplicacion || '—'}</div>
+                {planVer.normativa && planVer.normativa.avisos.length > 0 && (
+                  <div style={{ border: '1px solid rgba(255,180,84,0.5)', background: 'rgba(255,180,84,0.08)', borderRadius: 6, padding: '6px 8px' }}>
+                    <b style={{ color: '#8A4B12' }}>⚠ Avisos normativos al guardar:</b>
+                    {planVer.normativa.avisos.map((t, i) => <div key={i}>• {t}</div>)}
+                  </div>
+                )}
                 <div><b>Maquinaria:</b><br />{planVer.equipoIds.map(id => equipos.find(e => e.id === id)?.nombre).filter(Boolean).map((n, i) => <span key={i}>{n}<br /></span>) || '—'}</div>
               </div>
               <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 10 }}>
