@@ -47,7 +47,14 @@ export const PERMISO_POR_PESTANA: Partial<Record<string, PermisoClave>> = {
   vincular_siex: 'parcelas.crear_editar',   // reutiliza un permiso existente: no hay clave propia todavía
 }
 
+// La pestaña "Vincular con SIEX" está oculta mientras no exista la integración real
+// con el SIEX (para poder enseñar la web a clientes). NO se ha eliminado: el
+// componente (VincularSiexTab) y su bloque en page.tsx siguen ahí.
+// Para volver a mostrarla basta con poner esta constante a true.
+export const MOSTRAR_VINCULAR_SIEX = false
+
 export function puedeVerPestana(pestana: string, misPermisos: Record<PermisoClave, boolean>): boolean {
+  if (pestana === 'vincular_siex' && !MOSTRAR_VINCULAR_SIEX) return false
   const requerido = PERMISO_POR_PESTANA[pestana]
   if (!requerido) return true // sin restricción registrada (mapa, tareas...)
   return !!misPermisos[requerido]

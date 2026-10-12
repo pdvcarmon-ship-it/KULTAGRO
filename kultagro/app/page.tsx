@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import type { CSSProperties } from 'react'
 import { supabase } from './lib/supabaseClient'
 import LoginScreen from './LoginScreen'
 import type { Session } from '@supabase/supabase-js'
@@ -528,7 +529,10 @@ interface StockItem {
   unidad: 'L' | 'Kg' | 'g' | 'mg' | 'mL' 
   fechaRegistro: string
   fincaId: string
-  campanaId: string
+  campanaId: string        // ya no se usa en Stock (se conserva por compatibilidad con filas antiguas)
+  fechaCompra: string      // 'YYYY-MM-DD' (vacío en entradas antiguas, anteriores a este cambio)
+  albaran: string
+  comercializadora: string
 }
 
 // Fila mínima de planes_abonado, leída aparte SOLO para poder sumar en Stock
@@ -968,11 +972,16 @@ export default function Home() {
   const [stock, setStock] = useState<StockItem[]>([])
   const [formStock, setFormStock] = useState(false)
   const [stockFincaId, setStockFincaId] = useState('')
-  const [stockCampanaId, setStockCampanaId] = useState('')
   const [abonosAplicados, setAbonosAplicados] = useState<AbonoAplicado[]>([])
   const [stockProducto, setStockProducto] = useState('')
   const [stockCantidad, setStockCantidad] = useState('')
   const [stockUnidad, setStockUnidad] = useState<'L' | 'Kg'>('L')
+  const [stockFormFincaId, setStockFormFincaId] = useState('')        // finca elegida en el popup (obligatoria)
+  const [stockFechaCompra, setStockFechaCompra] = useState('')        // obligatoria
+  const [stockAlbaran, setStockAlbaran] = useState('')                // obligatorio
+  const [stockComercializadora, setStockComercializadora] = useState('')
+  const [stockEditId, setStockEditId] = useState<string | null>(null) // entrada que se está editando
+  const [stockDetalleProducto, setStockDetalleProducto] = useState<string | null>(null) // producto abierto en el detalle
 
   // - Fincas -
   const [fincas, setFincas] = useState<Finca[]>([])
@@ -1139,13 +1148,12 @@ export default function Home() {
     return fincas.filter(f => fincasAsignadas.includes(f.id))
   }, [fincas, personal, session, misPermisos])
 
-  // Preselecciona finca/campaña del selector de Stock en cuanto hay datos,
+  // Preselecciona la finca del selector de Stock en cuanto hay datos,
   // para no obligar a elegir manualmente cada vez que se entra a la pestaña.
   useEffect(() => {
     if (!stockFincaId && fincasVisibles.length > 0) setStockFincaId(fincasVisibles[0].id)
-    if (!stockCampanaId && campanas.length > 0) setStockCampanaId(campanas[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fincasVisibles, campanas])
+  }, [fincasVisibles])
   const [personalDetalleId, setPersonalDetalleId] = useState<string | null>(null)
   const [formPersonal, setFormPersonal] = useState(false)
   const [personalEditar, setPersonalEditar] = useState<Personal | null>(null)
@@ -1320,6 +1328,7 @@ export default function Home() {
           stockMapeado = sRes.data.map((s: any) => ({
             id: s.id, producto: s.producto, comprado: s.comprado, unidad: s.unidad,
             fechaRegistro: s.fecha_registro, fincaId: s.finca_id || '', campanaId: s.campana_id || '',
+            fechaCompra: s.fecha_compra || '', albaran: s.albaran || '', comercializadora: s.comercializadora || '',
           }))
           setStock(stockMapeado)
         }
@@ -4005,70 +4014,114 @@ export default function Home() {
   const upsertStockDB = async (s: StockItem) => {
     if (!session) return
     try {
-      await supabase.from('stock').upsert({
+      const { error } = await supabase.from('stock').upsert({
         id: s.id, user_id: session.user.id, producto: s.producto,
         comprado: s.comprado, unidad: s.unidad, fecha_registro: s.fechaRegistro,
-        finca_id: s.fincaId, campana_id: s.campanaId,
+        finca_id: s.fincaId, campana_id: s.campanaId || null,
+        fecha_compra: s.fechaCompra || null, albaran: s.albaran || null, comercializadora: s.comercializadora || null,
       })
+      if (error) { console.error('Error guardando stock:', error); alert('No se pudo guardar la entrada de stock: ' + error.message) }
     } catch (e) { console.error('Error guardando stock:', e) }
   }
 
+  // 'YYYY-MM-DD' -> 'DD/MM/YYYY' sin pasar por Date (evita desfases de zona horaria)
+  const formatearFechaCompra = (iso: string): string => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '')
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+  }
+
+  const abrirFormStockNuevo = () => {
+    setStockEditId(null)
+    setStockFormFincaId('')
+    setStockFechaCompra('')
+    setStockAlbaran('')
+    setStockComercializadora('')
+    setStockProducto(''); setStockCantidad(''); setStockUnidad('L'); setFitoBusqueda(''); setFitoResultados([])
+    setFormStock(true)
+  }
+
+  const abrirFormStockEditar = (e: StockItem) => {
+    setStockEditId(e.id)
+    setStockFormFincaId(e.fincaId)
+    setStockFechaCompra(e.fechaCompra)
+    setStockAlbaran(e.albaran)
+    setStockComercializadora(e.comercializadora)
+    setStockProducto(e.producto)
+    setStockCantidad(e.comprado)
+    setStockUnidad(e.unidad === 'Kg' ? 'Kg' : 'L')
+    setFitoBusqueda(''); setFitoResultados([])
+    setFormStock(true)
+  }
+
+  const cerrarFormStock = () => {
+    setFormStock(false)
+    setStockEditId(null)
+    setStockProducto(''); setStockCantidad(''); setStockUnidad('L')
+    setStockFormFincaId(''); setStockFechaCompra(''); setStockAlbaran(''); setStockComercializadora('')
+    setFitoBusqueda(''); setFitoResultados([])
+  }
+
+  // Cada compra es UNA entrada (fila) propia: ya no se suman a una existente.
   const guardarStockItem = async () => {
     if (!misPermisos['stock.crear_editar']) return
-    if (!stockProducto.trim() || !stockCantidad.trim() || Number(stockCantidad) <= 0) return
-    if (!stockFincaId || !stockCampanaId) { alert('Selecciona finca y campaña antes de registrar la entrada.'); return }
-    const nombreNorm = stockProducto.trim().toLowerCase()
-    // Misma finca + misma campaña + mismo producto + misma unidad = se suma a
-    // la entrada existente; distinta finca o campaña son existencias aparte.
-    const existente = stock.find(s => s.producto.toLowerCase() === nombreNorm && s.unidad === stockUnidad
-      && s.fincaId === stockFincaId && s.campanaId === stockCampanaId)
+    if (!stockFormFincaId) { alert('Selecciona la finca.'); return }
+    if (!stockFechaCompra) { alert('Indica la fecha de compra.'); return }
+    if (!stockAlbaran.trim()) { alert('Indica el nº de albarán.'); return }
+    if (!stockProducto.trim()) { alert('Indica el producto.'); return }
+    if (!stockCantidad.trim() || !(Number(stockCantidad) > 0)) { alert('Indica una cantidad comprada mayor que 0.'); return }
 
-    let nuevaLista: StockItem[]
-    let itemActualizado: StockItem
-    if (existente) {
-      itemActualizado = { ...existente, comprado: (Number(existente.comprado) + Number(stockCantidad)).toString(), fechaRegistro: new Date().toLocaleDateString('es-ES') }
-      nuevaLista = stock.map(s => s.id === existente.id ? itemActualizado : s)
-    } else {
-      itemActualizado = {
-        id: String(Date.now()),
-        producto: stockProducto.trim(),
-        comprado: stockCantidad.trim(),
-        unidad: stockUnidad,
-        fechaRegistro: new Date().toLocaleDateString('es-ES'),
-        fincaId: stockFincaId,
-        campanaId: stockCampanaId,
-      }
-      nuevaLista = [itemActualizado, ...stock]
+    // Un mismo producto en una misma finca debe llevar siempre la misma unidad
+    const nombreNorm = stockProducto.trim().toLowerCase()
+    const otras = stock.filter(x => x.id !== stockEditId && x.fincaId === stockFormFincaId && x.producto.toLowerCase() === nombreNorm)
+    if (otras.length > 0 && otras.some(x => x.unidad !== stockUnidad)) {
+      alert(`Este producto ya tiene entradas en esta finca con unidad ${otras[0].unidad}. Usa la misma unidad.`)
+      return
     }
-    saveStock(nuevaLista)
-    upsertStockDB(itemActualizado)
-    setStockProducto(''); setStockCantidad(''); setStockUnidad('L'); setFormStock(false); setFitoBusqueda(''); setFitoResultados([])
+
+    const anterior = stockEditId ? stock.find(x => x.id === stockEditId) : undefined
+    const entrada: StockItem = {
+      id: anterior?.id || String(Date.now()),
+      producto: stockProducto.trim(),
+      comprado: stockCantidad.trim(),
+      unidad: stockUnidad,
+      fechaRegistro: anterior?.fechaRegistro || new Date().toLocaleDateString('es-ES'),
+      fincaId: stockFormFincaId,
+      campanaId: anterior?.campanaId || '',
+      fechaCompra: stockFechaCompra,
+      albaran: stockAlbaran.trim(),
+      comercializadora: stockComercializadora.trim(),
+    }
+    saveStock(anterior ? stock.map(x => x.id === anterior.id ? entrada : x) : [entrada, ...stock])
+    upsertStockDB(entrada)
+    if (stockFormFincaId !== stockFincaId) setStockFincaId(stockFormFincaId) // para ver enseguida lo que se acaba de registrar
+    cerrarFormStock()
   }
 
   const eliminarStockItem = async (id: string) => {
     if (!misPermisos['stock.eliminar']) return
-    if (!confirm('Eliminar este producto del stock?')) return
+    if (!confirm('¿Eliminar esta entrada de compra?')) return
     saveStock(stock.filter(s => s.id !== id))
     try { await supabase.from('stock').delete().eq('id', id) } catch (e) { console.error(e) }
   }
 
-  // Busca el item de stock de un producto para UNA finca+campaña concretas
-  // (por nombre, sin distinguir mayúsc./minúsc.)
-  const buscarStockItem = (nombreProducto: string, fincaId: string, campanaId: string): StockItem | undefined =>
-    stock.find(s => s.producto.toLowerCase() === nombreProducto.toLowerCase() && s.fincaId === fincaId && s.campanaId === campanaId)
+  // Entradas de compra de un producto en UNA finca (sin distinguir mayúsc./minúsc.),
+  // de la más reciente a la más antigua.
+  const entradasStockProducto = (nombreProducto: string, fincaId: string): StockItem[] =>
+    stock
+      .filter(s => s.producto.toLowerCase() === nombreProducto.toLowerCase() && s.fincaId === fincaId)
+      .sort((a, b) => (b.fechaCompra || '').localeCompare(a.fechaCompra || ''))
 
-  // Calcula el total usado de un producto EN UNA FINCA Y CAMPAÑA concretas,
+  // Calcula el total usado de un producto EN UNA FINCA (todas las campañas),
   // sumando tratamientos fitosanitarios + lo aplicado en Plan de abonado,
-  // convertido a la unidad del stock (o 'L' por defecto si aún no hay ninguna
+  // convertido a la unidad del stock (o 'Kg' por defecto si aún no hay ninguna
   // entrada de compra registrada para ese producto — así puede salir en
   // negativo desde la primera aplicación, sin esperar a una compra previa).
-  const calcularUsoProducto = (nombreProducto: string, fincaId: string, campanaId: string): number => {
-    const stockItem = buscarStockItem(nombreProducto, fincaId, campanaId)
-    const unidadStock = stockItem?.unidad || 'Kg'
+  const calcularUsoProducto = (nombreProducto: string, fincaId: string): number => {
+    const unidadStock = entradasStockProducto(nombreProducto, fincaId)[0]?.unidad || 'Kg'
     const nombreNorm = nombreProducto.toLowerCase()
 
     const usoTratamientos = tratamientos
-      .filter(t => t.producto.toLowerCase() === nombreNorm && t.fincaId === fincaId && t.campanaId === campanaId)
+      .filter(t => t.producto.toLowerCase() === nombreNorm && t.fincaId === fincaId)
       .reduce((acc, t) => {
         const supTotal = misParcelas
           .filter(p => t.parcelaIds.includes(p.id))
@@ -4087,7 +4140,7 @@ export default function Home() {
     // Plan de abonado guarda dosis en kg/ha directamente (ya no hace falta
     // convertir canónico) — se pasa a la unidad del stock solo si es Kg/g/mg.
     const usoAbonado = abonosAplicados
-      .filter(a => a.abonoNombre.toLowerCase() === nombreNorm && a.fincaId === fincaId && a.campanaId === campanaId)
+      .filter(a => a.abonoNombre.toLowerCase() === nombreNorm && a.fincaId === fincaId)
       .reduce((acc, a) => {
         const parcela = misParcelas.find(p => p.id === a.parcelaId)
         if (!parcela) return acc
@@ -4099,15 +4152,16 @@ export default function Home() {
     return usoTratamientos + usoAbonado
   }
 
-  // Nombres de producto con actividad en esta finca+campaña (comprados y/o
-  // usados) aunque todavía no exista ninguna fila de compra — así el producto
+  // Nombres de producto con actividad en esta finca (comprados y/o usados)
+  // aunque todavía no exista ninguna fila de compra — así el producto
   // aparece igual, con "Comprado" a 0 y existencias en negativo.
-  const productosStockVisibles = (fincaId: string, campanaId: string): string[] => {
-    const nombres = new Set<string>()
-    stock.filter(s => s.fincaId === fincaId && s.campanaId === campanaId).forEach(s => nombres.add(s.producto))
-    tratamientos.filter(t => t.fincaId === fincaId && t.campanaId === campanaId).forEach(t => t.producto && nombres.add(t.producto))
-    abonosAplicados.filter(a => a.fincaId === fincaId && a.campanaId === campanaId).forEach(a => a.abonoNombre && nombres.add(a.abonoNombre))
-    return Array.from(nombres).sort((a, b) => a.localeCompare(b))
+  const productosStockVisibles = (fincaId: string): string[] => {
+    const nombres = new Map<string, string>() // clave en minúsculas -> nombre a mostrar
+    const add = (n?: string) => { if (n && !nombres.has(n.toLowerCase())) nombres.set(n.toLowerCase(), n) }
+    stock.filter(s => s.fincaId === fincaId).forEach(s => add(s.producto))
+    tratamientos.filter(t => t.fincaId === fincaId).forEach(t => add(t.producto))
+    abonosAplicados.filter(a => a.fincaId === fincaId).forEach(a => add(a.abonoNombre))
+    return Array.from(nombres.values()).sort((a, b) => a.localeCompare(b))
   }
 
   // - Funciones ESTADÍSTICA -
@@ -7454,7 +7508,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* PESTAÑA STOCK (propia, por finca y campaña) */}
+        {/* PESTAÑA STOCK (por finca; cada compra queda registrada como una entrada) */}
         {pestana === 'stock' && (
           <div style={{ width: '100%', height: '100%', overflow: 'auto', padding: isMobile ? 12 : 24, background: 'var(--bg)' }}>
             {!misPermisos['stock.ver'] ? (
@@ -7469,77 +7523,134 @@ export default function Home() {
                       {fincasVisibles.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
                     </select>
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase' }}>Campaña</label>
-                    <select value={stockCampanaId} onChange={e => setStockCampanaId(e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none', minWidth: 160 }}>
-                      {campanas.length === 0 && <option value="">Sin campañas</option>}
-                      {campanas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                    </select>
-                  </div>
                   <div style={{ flex: 1 }} />
                   {misPermisos['stock.crear_editar'] && (
-                    <button onClick={() => setFormStock(true)} disabled={!stockFincaId || !stockCampanaId}
-                      style={{ padding: '8px 16px', borderRadius: 8, background: 'var(--green)', border: 'none', color: 'var(--bg)', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: '0.06em', opacity: (!stockFincaId || !stockCampanaId) ? 0.5 : 1 }}>
+                    <button onClick={abrirFormStockNuevo} disabled={fincasVisibles.length === 0}
+                      style={{ padding: '8px 16px', borderRadius: 8, background: 'var(--green)', border: 'none', color: 'var(--bg)', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: '0.06em', opacity: fincasVisibles.length === 0 ? 0.5 : 1 }}>
                       + AÑADIR PRODUCTO
                     </button>
                   )}
                 </div>
 
-                {!stockFincaId || !stockCampanaId ? (
-                  <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>Selecciona finca y campaña para ver su stock.</div>
-                ) : productosStockVisibles(stockFincaId, stockCampanaId).length === 0 ? (
+                {!stockFincaId ? (
+                  <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>Selecciona una finca para ver su stock.</div>
+                ) : productosStockVisibles(stockFincaId).length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
                     <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>📦</div>
-                    <div style={{ fontSize: 13, letterSpacing: '0.06em' }}>SIN PRODUCTOS EN ESTA FINCA/CAMPAÑA</div>
+                    <div style={{ fontSize: 13, letterSpacing: '0.06em' }}>SIN PRODUCTOS EN ESTA FINCA</div>
                     <div style={{ fontSize: 10, marginTop: 8, lineHeight: 1.6 }}>Pulsa "+ AÑADIR PRODUCTO" para registrar una compra</div>
                   </div>
                 ) : (
                   <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)' }}>
-                      {['Producto', 'Comprado', 'Usado', 'Existencias', ''].map(h => (
-                        <div key={h} style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: h === 'Producto' || h === '' ? 'left' : 'right' }}>{h}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 8, padding: '10px 16px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)' }}>
+                      {['Producto', 'Comprado', 'Usado', 'Existencias'].map(h => (
+                        <div key={h} style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: h === 'Producto' ? 'left' : 'right' }}>{h}</div>
                       ))}
                     </div>
-                    {productosStockVisibles(stockFincaId, stockCampanaId).map(nombreProducto => {
-                      const s = buscarStockItem(nombreProducto, stockFincaId, stockCampanaId)
-                      const comprado = Number(s?.comprado) || 0
-                      const usado = calcularUsoProducto(nombreProducto, stockFincaId, stockCampanaId)
+                    {productosStockVisibles(stockFincaId).map(nombreProducto => {
+                      const entradas = entradasStockProducto(nombreProducto, stockFincaId)
+                      const comprado = entradas.reduce((acc, e) => acc + (Number(e.comprado) || 0), 0)
+                      const usado = calcularUsoProducto(nombreProducto, stockFincaId)
                       const existencias = comprado - usado
-                      const unidad = s?.unidad || 'Kg'
+                      const unidad = entradas[0]?.unidad || 'Kg'
                       return (
-                        <div key={nombreProducto} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, padding: '10px 16px', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
+                        <div key={nombreProducto} onClick={() => setStockDetalleProducto(nombreProducto)}
+                          style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 8, padding: '10px 16px', borderBottom: '1px solid var(--border)', alignItems: 'center', cursor: 'pointer' }}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface2)')}
+                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                           <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>
                             {nombreProducto}
-                            {!s && <span style={{ display: 'block', fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>sin compra registrada</span>}
+                            {entradas.length === 0 && <span style={{ display: 'block', fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>sin compra registrada</span>}
                           </div>
                           <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text)', textAlign: 'right' }}>{comprado.toFixed(2)} {unidad}</div>
                           <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--blue)', textAlign: 'right' }}>{usado.toFixed(2)} {unidad}</div>
                           <div style={{ fontSize: 12, fontFamily: 'var(--mono)', fontWeight: 700, textAlign: 'right', color: existencias < 0 ? '#6E2417' : 'var(--green)', textShadow: existencias < 0 ? 'none' : 'var(--green-outline)' }}>
                             {existencias.toFixed(2)} {unidad}
                           </div>
-                          {misPermisos['stock.eliminar'] && s && (
-                            <button onClick={() => eliminarStockItem(s.id)} style={{ padding: '4px 8px', borderRadius: 4, background: 'transparent', border: '1px solid rgba(110, 36, 23, 1)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer', justifySelf: 'end' }}>✕</button>
-                          )}
                         </div>
                       )
                     })}
                   </div>
                 )}
 
-                {/* Modal añadir stock */}
-                {formStock && (
-                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-                    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, width: '100%', maxWidth: 380, overflow: 'auto' }}>
+                {/* Modal detalle de un producto: entradas de compra */}
+                {stockDetalleProducto && (() => {
+                  const entradas = entradasStockProducto(stockDetalleProducto, stockFincaId)
+                  const comprado = entradas.reduce((acc, e) => acc + (Number(e.comprado) || 0), 0)
+                  const usado = calcularUsoProducto(stockDetalleProducto, stockFincaId)
+                  const unidad = entradas[0]?.unidad || 'Kg'
+                  return (
+                    <div onClick={() => setStockDetalleProducto(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, width: '100%', maxWidth: 520, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                          <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, color: 'var(--green)', textShadow: 'var(--green-outline)' }}>📦 {stockDetalleProducto}</span>
+                          <button onClick={() => setStockDetalleProducto(null)} style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 18 }}>✕</button>
+                        </div>
+                        <div style={{ padding: '10px 20px', fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--muted)', borderBottom: '1px solid var(--border)' }}>
+                          {fincasVisibles.find(f => f.id === stockFincaId)?.nombre} · Comprado <b style={{ color: 'var(--text)' }}>{comprado.toFixed(2)} {unidad}</b> · Usado <b style={{ color: 'var(--blue)' }}>{usado.toFixed(2)} {unidad}</b>
+                        </div>
+                        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+                          {entradas.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--muted)', fontFamily: 'var(--mono)', fontSize: 12 }}>Sin compras registradas para este producto.</div>
+                          ) : entradas.map(e => (
+                            <div key={e.id} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', fontSize: 12, color: 'var(--text)' }}>
+                                <div><div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Fecha de compra</div>{formatearFechaCompra(e.fechaCompra) || e.fechaRegistro || '—'}</div>
+                                <div><div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Cantidad comprada</div><b>{(Number(e.comprado) || 0).toFixed(2)} {e.unidad}</b></div>
+                                <div><div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Nº de albarán</div>{e.albaran || '—'}</div>
+                                <div><div style={{ fontSize: 9, fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase' }}>Comercializadora</div>{e.comercializadora || '—'}</div>
+                              </div>
+                              {(misPermisos['stock.crear_editar'] || misPermisos['stock.eliminar']) && (
+                                <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
+                                  {misPermisos['stock.crear_editar'] && (
+                                    <button onClick={() => abrirFormStockEditar(e)} style={{ padding: '5px 12px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer' }}>✏️ EDITAR</button>
+                                  )}
+                                  {misPermisos['stock.eliminar'] && (
+                                    <button onClick={() => eliminarStockItem(e.id)} style={{ padding: '5px 12px', borderRadius: 6, background: 'transparent', border: '1px solid rgba(110, 36, 23, 1)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer' }}>🗑 ELIMINAR</button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Modal añadir / editar entrada de stock */}
+                {formStock && (() => {
+                  const inp: CSSProperties = { width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }
+                  const lbl: CSSProperties = { display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }
+                  return (
+                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, width: '100%', maxWidth: 380, maxHeight: '92vh', overflow: 'auto' }}>
                       <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, color: 'var(--green)', textShadow: 'var(--green-outline)' }}>📦 AÑADIR PRODUCTO A STOCK</span>
-                        <button onClick={() => setFormStock(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 18 }}>✕</button>
+                        <span style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, color: 'var(--green)', textShadow: 'var(--green-outline)' }}>{stockEditId ? '✏️ EDITAR ENTRADA DE STOCK' : '📦 AÑADIR PRODUCTO A STOCK'}</span>
+                        <button onClick={cerrarFormStock} style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 18 }}>✕</button>
                       </div>
                       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                        <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
-                          Finca: <b style={{ color: 'var(--text)' }}>{fincasVisibles.find(f => f.id === stockFincaId)?.nombre}</b> · Campaña: <b style={{ color: 'var(--text)' }}>{campanas.find(c => c.id === stockCampanaId)?.nombre}</b>
+                        <div>
+                          <label style={lbl}>Finca *</label>
+                          <select value={stockFormFincaId} onChange={e => setStockFormFincaId(e.target.value)} style={inp}>
+                            <option value="">Selecciona una finca…</option>
+                            {fincasVisibles.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={lbl}>Fecha de compra *</label>
+                          <input type="date" value={stockFechaCompra} onChange={e => setStockFechaCompra(e.target.value)} style={inp}/>
+                        </div>
+                        <div>
+                          <label style={lbl}>Nº de albarán *</label>
+                          <input type="text" value={stockAlbaran} onChange={e => setStockAlbaran(e.target.value)} placeholder="Ej. ALB-2026-0123" style={inp}/>
+                        </div>
+                        <div>
+                          <label style={lbl}>Empresa comercializadora</label>
+                          <input type="text" value={stockComercializadora} onChange={e => setStockComercializadora(e.target.value)} placeholder="Nombre de la empresa" style={inp}/>
                         </div>
                         <div style={{ position: 'relative' }}>
-                          <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Buscar en Registro MAPA</label>
+                          <label style={lbl}>Buscar en Registro MAPA</label>
                           <input
                             type="text"
                             value={fitoBusqueda}
@@ -7554,7 +7665,7 @@ export default function Home() {
                               } else { setFitoResultados([]) }
                             }}
                             placeholder="Buscar en registro MAPA..."
-                            style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }}
+                            style={inp}
                           />
                           {fitoResultados.length > 0 && (
                             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 3000, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.4)', maxHeight: 200, overflowY: 'auto', marginTop: 2 }}>
@@ -7578,17 +7689,17 @@ export default function Home() {
                           )}
                         </div>
                         <div>
-                          <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Nombre del producto</label>
-                          <input type="text" value={stockProducto} onChange={e => setStockProducto(e.target.value)} placeholder="Debe coincidir con el nombre usado en tratamientos/abonado" style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }}/>
+                          <label style={lbl}>Nombre del producto *</label>
+                          <input type="text" value={stockProducto} onChange={e => setStockProducto(e.target.value)} placeholder="Debe coincidir con el nombre usado en tratamientos/abonado" style={inp}/>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 }}>
                           <div>
-                            <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Cantidad comprada</label>
-                            <input type="number" min="0" step="0.01" value={stockCantidad} onChange={e => setStockCantidad(e.target.value)} placeholder="0.00" style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }}/>
+                            <label style={lbl}>Cantidad comprada *</label>
+                            <input type="number" min="0" step="0.01" value={stockCantidad} onChange={e => setStockCantidad(e.target.value)} placeholder="0.00" style={inp}/>
                           </div>
                           <div>
-                            <label style={{ display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Unidad</label>
-                            <select value={stockUnidad} onChange={e => setStockUnidad(e.target.value as 'L' | 'Kg')} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }}>
+                            <label style={lbl}>Unidad</label>
+                            <select value={stockUnidad} onChange={e => setStockUnidad(e.target.value as 'L' | 'Kg')} style={{ ...inp, width: 'auto' }}>
                               <option value="L">L</option>
                               <option value="Kg">Kg</option>
                             </select>
@@ -7597,11 +7708,12 @@ export default function Home() {
                       </div>
                       <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 10 }}>
                         <button onClick={guardarStockItem} style={{ flex: 1, padding: '11px', borderRadius: 8, background: 'var(--green)', border: 'none', color: 'var(--bg)', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>💾 GUARDAR</button>
-                        <button onClick={() => setFormStock(false)} style={{ flex: 1, padding: '11px', borderRadius: 8, background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 13, cursor: 'pointer' }}>CANCELAR</button>
+                        <button onClick={cerrarFormStock} style={{ flex: 1, padding: '11px', borderRadius: 8, background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 13, cursor: 'pointer' }}>CANCELAR</button>
                       </div>
                     </div>
                   </div>
-                )}
+                  )
+                })()}
               </div>
             )}
           </div>
