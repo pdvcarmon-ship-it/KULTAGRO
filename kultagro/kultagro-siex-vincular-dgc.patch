@@ -1,0 +1,100 @@
+--- a/app/lib/permisosSesion.ts	2026-09-28 07:19:57.137197881 +0000
++++ b/app/lib/permisosSesion.ts	2026-09-28 07:19:57.138198410 +0000
+@@ -38,13 +38,13 @@
+ export const PERMISO_POR_PESTANA: Partial<Record<string, PermisoClave>> = {
+   mis_parcelas: 'parcelas.ver',
+   tratamientos: 'tratamientos.ver',
+-  stock: 'stock.ver',
+   personal: 'personal.ver',
+   equipos: 'maquinaria.ver',
+   riego: 'riego.ver',
+   cosechas: 'cosechas.ver',
+   abonado: 'abonado.ver',
+   permisos: 'permisos.gestionar',
++  vincular_siex: 'parcelas.crear_editar',   // reutiliza un permiso existente: no hay clave propia todavía
+ }
+ 
+ export function puedeVerPestana(pestana: string, misPermisos: Record<PermisoClave, boolean>): boolean {
+--- a/app/lib/sigpac.ts	2026-09-28 07:19:57.135083264 +0000
++++ b/app/lib/sigpac.ts	2026-09-28 07:19:57.136130449 +0000
+@@ -21,6 +21,7 @@
+   recinto?: string
+   usoSigpac?: string
+   supHa: number
++  siexDgcCodigo?: string   // código de la DGC en SIEX, tras vincular la finca (pantalla "Vincular con SIEX")
+ }
+ 
+ // Busca el primer valor no vacío entre varias claves posibles de un objeto de
+--- a/app/page.tsx	2026-09-28 07:19:57.132608352 +0000
++++ b/app/page.tsx	2026-09-28 07:19:57.133832856 +0000
+@@ -27,6 +27,7 @@
+   calcularPlazoSiex, estaPendienteDeEnvio, type PlazoSiex,
+ } from './lib/siex'
+ const ImportarParcelasExcel = dynamic(() => import('./components/ImportarParcelasExcel'), { ssr: false })
++const VincularSiexTab = dynamic(() => import('./components/VincularSiexTab'), { ssr: false })
+ const RiegoTab = dynamic(() => import('./components/RiegoTab'), { ssr: false })
+ const AbonadoTab = dynamic(() => import('./components/AbonadoTab'), { ssr: false })
+ const DonutChart = dynamic(() => import('./components/DonutChart'), { ssr: false })
+@@ -81,7 +82,7 @@
+ 
+ type Estado = 'idle' | 'cargando_parcela' | 'parcela_ok' | 'buscando' | 'cargando_rgb' | 'calculando_zonas' | 'done' | 'error'
+ type ModoVista = 'ninguna' | 'rgb' | 'zonas'
+-type Pestaña = 'mapa' | 'mis_parcelas' | 'tratamientos' | 'stock' | 'personal' | 'equipos' | 'riego' | 'tareas' | 'cosechas' | 'abonado' | 'permisos'
++type Pestaña = 'mapa' | 'mis_parcelas' | 'tratamientos' | 'stock' | 'personal' | 'equipos' | 'riego' | 'tareas' | 'cosechas' | 'abonado' | 'permisos' | 'vincular_siex'
+ 
+ // Abonado, Corrector nutricional y Bioestimulante se han retirado: ya existe el Plan de Abonado
+ // (pestaña Abonado) para esos casos. Los tratamientos antiguos con esos tipos se conservan tal
+@@ -564,6 +565,11 @@
+   nombre: string
+   descripcion: string
+   fechaRegistro: string
++  // Añadidos por GES (fincas.nif / fincas.codigo_rea / fincas.codigo_siex). Una finca sin `nif`
++  // no la ha dado de alta GES todavía y no se puede enviar a SIEX (ver VincularSiexTab).
++  nif?: string
++  codigoRea?: string
++  codigoSiex?: string
+ }
+ 
+ // Un "punto de captación de agua" (pozo, canal, balsa...) asociado a una finca y a las parcelas
+@@ -1338,6 +1344,7 @@
+           fincasMapeadas = fincasRes.data.map((f: any) => ({
+             id: f.id, nombre: f.nombre, descripcion: f.descripcion || '',
+             fechaRegistro: f.fecha_registro || '',
++            nif: f.nif || undefined, codigoRea: f.codigo_rea || undefined, codigoSiex: f.codigo_siex || undefined,
+           }))
+           setFincas(fincasMapeadas)
+         }
+@@ -5381,7 +5388,7 @@
+               </button>
+               {menuAbierto && (
+                 <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 6000, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0 0 10px 10px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)', minWidth: 220 }}>
+-                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
++                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+                     <button key={tab} onClick={() => { setPestana(tab); setMenuAbierto(false) }}
+                       style={{ display: 'block', width: '100%', padding: '15px 20px', border: 'none', background: pestana === tab ? 'rgba(31, 74, 40, 1)' : 'transparent', fontFamily: 'var(--mono)', fontSize: 14, fontWeight: pestana === tab ? 700 : 400, cursor: 'pointer', color: 'var(--text)', textAlign: 'left', borderLeft: `3px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, borderBottom: '1px solid var(--border)' }}
+                     >
+@@ -5400,11 +5407,11 @@
+             </span>
+           ) : (
+             <div style={{ display: 'flex', flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'thin' }}>
+-              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
++              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+                 <button key={tab} onClick={() => setPestana(tab)}
+                   style={{ padding: '12px 20px', border: 'none', background: 'transparent', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: 'var(--text)', borderBottom: `2px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, letterSpacing: '0.06em', transition: 'all 0.15s', whiteSpace: 'nowrap', flexShrink: 0 }}
+                 >
+-                  {tab === 'mapa' ? '🗺 MAPA' : tab === 'mis_parcelas' ? '📁 MIS PARCELAS' : tab === 'tratamientos' ? '🧪 TRATAMIENTOS' : tab === 'stock' ? '📦 STOCK' : tab === 'tareas' ? '📋 TAREAS' : tab === 'riego' ? '💧 RIEGO' : tab === 'cosechas' ? '🌾 COSECHAS' : tab === 'personal' ? '👷 PERSONAL' : tab === 'equipos' ? '🚜 EQUIPOS' : tab === 'abonado' ? '🌱 ABONADO' : '🔐 PERMISOS'}
++                  {tab === 'mapa' ? '🗺 MAPA' : tab === 'mis_parcelas' ? '📁 MIS PARCELAS' : tab === 'tratamientos' ? '🧪 TRATAMIENTOS' : tab === 'stock' ? '📦 STOCK' : tab === 'tareas' ? '📋 TAREAS' : tab === 'riego' ? '💧 RIEGO' : tab === 'cosechas' ? '🌾 COSECHAS' : tab === 'personal' ? '👷 PERSONAL' : tab === 'equipos' ? '🚜 EQUIPOS' : tab === 'abonado' ? '🌱 ABONADO' : tab === 'permisos' ? '🔐 PERMISOS' : '🔗 VINCULAR SIEX'}
+                 </button>
+               ))}
+             </div>
+@@ -8749,6 +8756,10 @@
+           )
+         })()}
+ 
++        {pestana === 'vincular_siex' && (
++          <VincularSiexTab session={session} fincas={fincas} misParcelas={misParcelas} setMisParcelas={setMisParcelas} />
++        )}
++
+         {pestana === 'permisos' && (
+           <PermisosTab session={session} personal={personal} setPersonal={setPersonal} isMobile={isMobile} />
+         )}
