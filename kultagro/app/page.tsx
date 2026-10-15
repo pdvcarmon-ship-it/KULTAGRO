@@ -5734,6 +5734,15 @@ export default function Home() {
                 </div>
                 {errorSigpacRef && <div style={{ marginTop: 6, padding: '8px 10px', borderRadius: 6, background: 'rgba(110, 36, 23,0.1)', border: '1px solid rgba(110, 36, 23,0.3)', fontSize: 10, color: '#6E2417', fontFamily: 'var(--mono)' }}>{errorSigpacRef}</div>}
 
+                {/* Guía en PDF: visible hasta que se selecciona, dibuja o busca la primera parcela */}
+                {!parcelaInfo && (
+                  <a href="/instrucciones-guardar-parcelas.pdf" download="Instrucciones-guardar-parcelas.pdf"
+                    style={{ display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 14, padding: '14px 18px', textAlign: 'center', textDecoration: 'none',
+                      border: '1.5px solid #000', borderRadius: '50%', color: '#000', fontWeight: 700, fontSize: 15, lineHeight: 1.25, fontFamily: 'var(--sans)', cursor: 'pointer' }}>
+                    Instrucciones guardar parcela/s
+                  </a>
+                )}
+
                 {fincaVistaEnMapa && (
                   <div style={{ marginTop: 8, padding: '10px', borderRadius: 6, background: 'rgba(110, 36, 23,0.08)', border: '1px solid rgba(110, 36, 23,0.25)', fontSize: 11, fontFamily: 'var(--mono)' }}>
                     <div style={{ color: '#6E2417', fontWeight: 700, marginBottom: 6 }}>🏡 {fincaVistaEnMapa.nombre}</div>
