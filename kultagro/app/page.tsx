@@ -5737,8 +5737,8 @@ export default function Home() {
                 {/* Guía en PDF: visible hasta que se selecciona, dibuja o busca la primera parcela */}
                 {!parcelaInfo && (
                   <a href="/instrucciones-guardar-parcelas.pdf" download="Instrucciones-guardar-parcelas.pdf"
-                    style={{ display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 14, padding: '14px 18px', textAlign: 'center', textDecoration: 'none',
-                      border: '1.5px solid #000', borderRadius: '50%', color: '#000', fontWeight: 700, fontSize: 15, lineHeight: 1.25, fontFamily: 'var(--sans)', cursor: 'pointer' }}>
+                    style={{ display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 14, padding: '10px 16px', textAlign: 'center', textDecoration: 'none',
+                      border: 'none', borderRadius: 8, background: 'var(--green)', color: '#fff', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', cursor: 'pointer' }}>
                     Instrucciones guardar parcela/s
                   </a>
                 )}
