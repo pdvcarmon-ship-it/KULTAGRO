@@ -1678,6 +1678,63 @@ export default function Home() {
   }
 
   // - Helpers -
+  // Las peticiones MDT envían la geometría de la parcela en la URL. Con parcelas grandes o de
+  // varios recintos (coordenadas con 14+ decimales) la URL puede superar el límite del servidor y el
+  // navegador solo informa de "Failed to fetch". Se redondea a 6 decimales (~0,1 m) y, si aun así es
+  // larga, se simplifica el contorno (Douglas-Peucker, hasta ~16 m). La máscara es a 5 m/píxel.
+  const geojsonParaUrl = (geojson: any, maxLen = 6000): string => {
+    const redondear = (n: number) => Math.round(n * 1e6) / 1e6
+    const simplificarAnillo = (anillo: number[][], tol: number): number[][] => {
+      if (tol === 0 || anillo.length <= 4) return anillo
+      const keep: boolean[] = new Array(anillo.length).fill(false)
+      keep[0] = true; keep[anillo.length - 1] = true
+      const pila: [number, number][] = [[0, anillo.length - 1]]
+      while (pila.length) {
+        const [a, b] = pila.pop()!
+        const [x1, y1] = anillo[a], [x2, y2] = anillo[b]
+        const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy
+        let maxD = 0, idx = -1
+        for (let i = a + 1; i < b; i++) {
+          const [px, py] = anillo[i]
+          let d: number
+          if (len2 === 0) d = Math.hypot(px - x1, py - y1)
+          else {
+            const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2))
+            d = Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+          }
+          if (d > maxD) { maxD = d; idx = i }
+        }
+        if (idx > -1 && maxD > tol) { keep[idx] = true; pila.push([a, idx], [idx, b]) }
+      }
+      const res = anillo.filter((_, i) => keep[i])
+      return res.length >= 4 ? res : anillo
+    }
+    const anillo = (r: number[][], tol: number) => simplificarAnillo(r.map(c => [redondear(c[0]), redondear(c[1])]), tol)
+    let ultimo = ''
+    for (const tol of [0, 0.00001, 0.00002, 0.00004, 0.00008, 0.00016]) {
+      const g = {
+        ...geojson,
+        features: (geojson.features || []).map((f: any) => {
+          const geom = f.geometry
+          if (geom?.type === 'Polygon') return { ...f, geometry: { ...geom, coordinates: geom.coordinates.map((r: number[][]) => anillo(r, tol)) } }
+          if (geom?.type === 'MultiPolygon') return { ...f, geometry: { ...geom, coordinates: geom.coordinates.map((poly: number[][][]) => poly.map((r: number[][]) => anillo(r, tol))) } }
+          return f
+        }),
+      }
+      ultimo = encodeURIComponent(JSON.stringify(g))
+      if (ultimo.length <= maxLen) break
+    }
+    return ultimo
+  }
+
+  // fetch que reintenta una vez si el servidor no responde (p. ej. se está despertando en Render)
+  const fetchConReintento = async (url: string, intentos = 2): Promise<Response> => {
+    for (let i = 0; i < intentos; i++) {
+      try { return await fetch(url) } catch (e) { if (i < intentos - 1) await new Promise(r => setTimeout(r, 4000)) }
+    }
+    throw new Error('No se pudo conectar con el servidor. Inténtalo de nuevo en unos segundos.')
+  }
+
   const getBbox = (geojson: any): string => {
     const geom = geojson.features[0].geometry
     const allCoords: number[][] = []
@@ -5317,12 +5374,13 @@ export default function Home() {
     setCalculandoContornos(true); setError(''); setContornosUrl(null); setContornosStats(null)
     try {
       const bbox = getBbox(parcGeojson)
-      const gp = encodeURIComponent(JSON.stringify(parcGeojson))
-      const r = await fetch(`${BACKEND}/mdt/contornos?bbox=${bbox}&geojson=${gp}`)
+      const gp = geojsonParaUrl(parcGeojson)
+      const r = await fetchConReintento(`${BACKEND}/mdt/contornos?bbox=${bbox}&geojson=${gp}`)
       if (!r.ok) throw new Error(`Error ${r.status}`)
       const data = await r.json()
       setContornosStats(data.stats)
-      const ir = await fetch(`${BACKEND}${data.imagen_url}`)
+      const ir = await fetchConReintento(`${BACKEND}${data.imagen_url}`)
+      if (!ir.ok) throw new Error(`Error ${ir.status} al cargar la imagen`)
       const blob = await ir.blob()
       const url = URL.createObjectURL(blob)
       setContornosUrl(url)
@@ -5340,12 +5398,13 @@ export default function Home() {
     setCalculandoMdtColor(true); setError(''); setMdtColorUrl(null); setMdtColorStats(null)
     try {
       const bbox = getBbox(parcGeojson)
-      const gp = encodeURIComponent(JSON.stringify(parcGeojson))
-      const r = await fetch(`${BACKEND}/mdt/mapa_color?bbox=${bbox}&geojson=${gp}`)
+      const gp = geojsonParaUrl(parcGeojson)
+      const r = await fetchConReintento(`${BACKEND}/mdt/mapa_color?bbox=${bbox}&geojson=${gp}`)
       if (!r.ok) throw new Error(`Error ${r.status}`)
       const data = await r.json()
       setMdtColorStats(data.stats)
-      const ir = await fetch(`${BACKEND}${data.imagen_url}`)
+      const ir = await fetchConReintento(`${BACKEND}${data.imagen_url}`)
+      if (!ir.ok) throw new Error(`Error ${ir.status} al cargar la imagen`)
       const blob = await ir.blob()
       const url = URL.createObjectURL(blob)
       setMdtColorUrl(url)
