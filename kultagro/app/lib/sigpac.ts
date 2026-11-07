@@ -106,3 +106,36 @@ export const parsearRefSigpacTexto = (
   const [pr, mu, ag, zo, po, pa, re] = partes
   return { pr, mu, ag, zo, po, pa, re }
 }
+
+
+// ---- Refresco de referencias SIGPAC ----
+// Campos que forman la REFERENCIA de un recinto. Es lo único que se actualiza al refrescar:
+// la geometría, la superficie, el uso y el vínculo SIEX del recinto se conservan tal cual.
+export const CAMPOS_REF_SIGPAC = ['provincia', 'municipio', 'agregado', 'zona', 'poligono', 'parcela', 'recinto'] as const
+
+// Compara los recintos guardados con los que SIGPAC publica hoy bajo la misma geometría.
+// - sinCambio: su referencia sigue existiendo en SIGPAC.
+// - cambios: referencia desaparecida + referencia nueva con superficie equivalente (±5 % o 0,02 ha).
+// - sinResolver: referencia guardada que SIGPAC ya no devuelve y sin equivalente claro (no se toca).
+export const emparejarReferencias = (antiguos: RecintoRef[], actuales: RecintoRef[]) => {
+  const clave = (r: RecintoRef) => formatRefSigpac(r)
+  const clavesActuales = new Set(actuales.map(clave))
+  const clavesAntiguas = new Set(antiguos.map(clave))
+  const sinCambio = antiguos.filter(r => clavesActuales.has(clave(r)))
+  const huerfanos = antiguos.filter(r => !clavesActuales.has(clave(r)))
+  const candidatos = actuales.filter(r => !clavesAntiguas.has(clave(r)))
+  const usados = new Set<number>()
+  const cambios: { antiguo: RecintoRef; nuevo: RecintoRef }[] = []
+  huerfanos.forEach(v => {
+    let mejor = -1
+    let mejorDif = Infinity
+    candidatos.forEach((n, i) => {
+      if (usados.has(i)) return
+      const dif = Math.abs(n.supHa - v.supHa)
+      if (dif <= Math.max(0.02, v.supHa * 0.05) && dif < mejorDif) { mejor = i; mejorDif = dif }
+    })
+    if (mejor >= 0) { usados.add(mejor); cambios.push({ antiguo: v, nuevo: candidatos[mejor] }) }
+  })
+  const sinResolver = huerfanos.filter(v => !cambios.some(c => c.antiguo === v))
+  return { cambios, sinCambio, sinResolver }
+}
