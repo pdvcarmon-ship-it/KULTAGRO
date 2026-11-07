@@ -1247,12 +1247,22 @@ export default function Home() {
   }, [parcelaDetalleId])
 
   // - Autenticación: escuchar sesión -
+  // Si en este mismo navegador entra OTRA cuenta distinta de la anterior, se recarga la página:
+  // así no puede quedar en memoria ningún dato de la cuenta anterior.
+  const usuarioPrevioRef = useRef<string | null>(null)
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
+      usuarioPrevioRef.current = data.session?.user?.id ?? null
       setSession(data.session)
       setAuthLoading(false)
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
+      const nuevoId = sess?.user?.id ?? null
+      if (usuarioPrevioRef.current && nuevoId && usuarioPrevioRef.current !== nuevoId) {
+        window.location.reload()
+        return
+      }
+      if (nuevoId) usuarioPrevioRef.current = nuevoId
       setSession(sess)
       if (!sess) setDataLoaded(false)
     })
