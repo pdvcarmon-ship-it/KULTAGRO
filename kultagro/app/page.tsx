@@ -11,8 +11,7 @@ import {
   extraerRecinto,
   formatRefSigpac,
   fusionarPoligonosDeFeatures,
-  construirEstadoDesdeFeatures,
-} from './lib/sigpac'
+  construirEstadoDesdeFeatures, emparejarReferencias, CAMPOS_REF_SIGPAC } from './lib/sigpac'
 import { getEsriPreviewUrl } from './lib/parcelaUtils'
 import { calcularMisPermisos, puedeVerPestana } from './lib/permisosSesion'
 import { CAT, errorCultivoVariedad, normalizarTexto, buscarPorNombreExacto, type CultivoVariedadValor } from './lib/catalogos'
@@ -736,6 +735,41 @@ const detectarRecintosBajoDibujo = async (geom: any): Promise<RecintoRef[]> => {
     recintos.push(ref)
   })
   return recintos
+}
+
+// Refresco de referencias: consulta /sigpac/punto en varios puntos interiores de CADA polígono de
+// la geometría ya guardada y devuelve los recintos que SIGPAC publica hoy bajo ella. Solo lee: la
+// geometría guardada no se modifica nunca.
+const consultarRecintosActualesBajoGeometria = async (
+  geojson: any
+): Promise<{ recintos: RecintoRef[]; consultasOk: number; consultasTotal: number }> => {
+  const poligonos: number[][][][] = []
+  ;(geojson?.features || []).forEach((f: any) => {
+    const g = f?.geometry
+    if (g?.type === 'Polygon') poligonos.push(g.coordinates)
+    else if (g?.type === 'MultiPolygon') g.coordinates.forEach((c: number[][][]) => poligonos.push(c))
+  })
+  const puntos: [number, number][] = []
+  poligonos.forEach(poly => puntos.push(...generarPuntosMuestra({ type: 'Polygon', coordinates: poly }, 3)))
+  const lista = puntos.slice(0, 80)
+  const resultados = await Promise.allSettled(
+    lista.map(([lat, lon]) => fetch(`${BACKEND}/sigpac/punto?lat=${lat}&lon=${lon}`).then(r => (r.ok ? r.json() : null)))
+  )
+  const vistos = new Set<string>()
+  const recintos: RecintoRef[] = []
+  let consultasOk = 0
+  resultados.forEach(res => {
+    if (res.status !== 'fulfilled' || !res.value) return
+    consultasOk++
+    const props = res.value.features?.[0]?.properties
+    if (!props) return
+    const ref = extraerRecinto(props)
+    const clave = formatRefSigpac(ref)
+    if (clave.includes('?') || vistos.has(clave)) return
+    vistos.add(clave)
+    recintos.push(ref)
+  })
+  return { recintos, consultasOk, consultasTotal: lista.length }
 }
 
 interface ParcelaGuardada {
@@ -3944,6 +3978,60 @@ export default function Home() {
     return '—'
   }
 
+  // Refresca SOLO las referencias SIGPAC de una parcela guardada (la administración a veces las cambia).
+  // No toca la geometría, la superficie, el uso ni ningún otro dato: únicamente escribe la columna
+  // parcela_info con las referencias actualizadas.
+  const [refrescandoRefsId, setRefrescandoRefsId] = useState<string | null>(null)
+  const [refrescoRefsMsg, setRefrescoRefsMsg] = useState<{ id: string; ok: boolean; lineas: string[] } | null>(null)
+
+  const refrescarReferenciasSigpac = async (p: ParcelaGuardada) => {
+    if (!misPermisos['parcelas.crear_editar']) return
+    const antiguos: RecintoRef[] = p.parcelaInfo?.recintos || []
+    if (!antiguos.length || !p.geojson) return
+    setRefrescandoRefsId(p.id)
+    setRefrescoRefsMsg(null)
+    try {
+      const { recintos: actuales, consultasOk, consultasTotal } = await consultarRecintosActualesBajoGeometria(p.geojson)
+      if (consultasOk === 0) {
+        setRefrescoRefsMsg({ id: p.id, ok: false, lineas: ['No se pudo consultar SIGPAC. Inténtalo de nuevo en unos segundos; no se ha cambiado nada.'] })
+        return
+      }
+      const { cambios, sinResolver } = emparejarReferencias(antiguos, actuales)
+      const lineas: string[] = []
+      if (cambios.length > 0) {
+        const nuevosRecintos = antiguos.map((r: RecintoRef) => {
+          const c = cambios.find(x => x.antiguo === r)
+          if (!c) return r
+          const refNueva: Record<string, any> = {}
+          CAMPOS_REF_SIGPAC.forEach(k => { refNueva[k] = c.nuevo[k] })
+          return { ...r, ...refNueva } // supHa, usoSigpac, siexDgcCodigo… se conservan
+        })
+        const nuevaInfo = {
+          ...p.parcelaInfo,
+          recintos: nuevosRecintos,
+          municipio: nuevosRecintos[0]?.municipio,
+          poligono: nuevosRecintos[0]?.poligono,
+          parcela: nuevosRecintos[0]?.parcela,
+        }
+        const { error } = await supabase.from('parcelas').update({ parcela_info: nuevaInfo }).eq('id', p.id)
+        if (error) throw new Error(error.message)
+        setMisParcelas(prev => prev.map(x => (x.id === p.id ? { ...x, parcelaInfo: nuevaInfo } : x)))
+        lineas.push(`✓ ${cambios.length} referencia${cambios.length > 1 ? 's' : ''} actualizada${cambios.length > 1 ? 's' : ''}:`)
+        cambios.forEach(c => lineas.push(`${formatRefSigpac(c.antiguo)} → ${formatRefSigpac(c.nuevo)}`))
+      }
+      if (sinResolver.length > 0) {
+        lineas.push(`⚠ No se pudo confirmar (no se ha tocado): ${sinResolver.map(r => formatRefSigpac(r)).join(', ')}. SIGPAC ya no la devuelve y no hay otra equivalente; revísala a mano.`)
+      }
+      if (consultasOk < consultasTotal) lineas.push(`Aviso: ${consultasTotal - consultasOk} de ${consultasTotal} consultas a SIGPAC fallaron; el resultado puede estar incompleto.`)
+      if (cambios.length === 0 && sinResolver.length === 0) lineas.unshift('✓ Las referencias ya están al día.')
+      setRefrescoRefsMsg({ id: p.id, ok: sinResolver.length === 0, lineas })
+    } catch (e: any) {
+      setRefrescoRefsMsg({ id: p.id, ok: false, lineas: ['Error al refrescar las referencias: ' + (e?.message || 'desconocido') + '. No se ha cambiado nada.'] })
+    } finally {
+      setRefrescandoRefsId(null)
+    }
+  }
+
   const [generandoPdfId, setGenerandoPdfId] = useState<string | null>(null)
 
   const generarPdfTratamiento = async (t: Tratamiento) => {
@@ -7071,7 +7159,23 @@ export default function Home() {
                     {/* Referencias SIGPAC (1 o varios recintos que forman la parcela) */}
                     {parcelaDetalle.parcelaInfo?.recintos?.length > 0 && (
                       <div style={{ marginBottom: 16 }}>
-                        <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text)', letterSpacing: '0.06em', marginBottom: 8, fontWeight: 700 }}>REFERENCIA SIGPAC</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text)', letterSpacing: '0.06em', fontWeight: 700 }}>REFERENCIA SIGPAC</div>
+                          {misPermisos['parcelas.crear_editar'] && (
+                            <button
+                              onClick={() => refrescarReferenciasSigpac(parcelaDetalle)}
+                              disabled={refrescandoRefsId === parcelaDetalle.id}
+                              title="Refrescar las referencias SIGPAC de esta parcela (no cambia la geometría)"
+                              style={{ padding: '3px 8px', borderRadius: 6, background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 12, cursor: refrescandoRefsId === parcelaDetalle.id ? 'wait' : 'pointer', opacity: refrescandoRefsId === parcelaDetalle.id ? 0.6 : 1 }}>
+                              {refrescandoRefsId === parcelaDetalle.id ? '⏳' : '🔄'}
+                            </button>
+                          )}
+                        </div>
+                        {refrescoRefsMsg && refrescoRefsMsg.id === parcelaDetalle.id && (
+                          <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 6, fontSize: 10, fontFamily: 'var(--mono)', lineHeight: 1.5, color: 'var(--text)', background: refrescoRefsMsg.ok ? 'rgba(46, 125, 50,0.1)' : 'rgba(255,180,84,0.12)', border: refrescoRefsMsg.ok ? '1px solid rgba(46, 125, 50,0.3)' : '1px solid rgba(255,180,84,0.5)' }}>
+                            {refrescoRefsMsg.lineas.map((l, i) => <div key={i}>{l}</div>)}
+                          </div>
+                        )}
                         {parcelaDetalle.parcelaInfo.recintos.length === 1 ? (
                           <div style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px', fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--text)' }}>
                             {formatRefSigpac(parcelaDetalle.parcelaInfo.recintos[0])}
