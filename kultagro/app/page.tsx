@@ -6463,8 +6463,14 @@ export default function Home() {
                     <textarea value={formInfoAdicional} onChange={e => setFormInfoAdicional(e.target.value)} placeholder="Notas, observaciones, variedad..." rows={3} style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none', resize: 'vertical' }}/>
                   </div>
 
-                  {formError && <div style={{ padding: '8px 12px', borderRadius: 6, background: 'rgba(110, 36, 23,0.08)', border: '1px solid rgba(110, 36, 23,0.2)', color: '#6E2417', fontSize: 12, fontFamily: 'var(--mono)' }}>⚠ {formError}</div>}
                 </div>
+
+                {/* Aviso de lo que falta: fijo justo encima de GUARDAR / CANCELAR para que siempre se vea */}
+                {formError && (
+                  <div role="alert" style={{ margin: '0 20px 10px', padding: '10px 12px', borderRadius: 6, background: 'rgba(110, 36, 23,0.08)', border: '1px solid rgba(110, 36, 23,0.35)', color: '#6E2417', fontSize: 12, fontWeight: 700, fontFamily: 'var(--mono)', lineHeight: 1.4 }}>
+                    ⚠ {formError}
+                  </div>
+                )}
 
                 {/* Botones */}
                 <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 10 }}>
