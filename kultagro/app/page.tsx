@@ -737,6 +737,42 @@ const detectarRecintosBajoDibujo = async (geom: any): Promise<RecintoRef[]> => {
   return recintos
 }
 
+// Quitar un recinto de la selección múltiple: la geometría acumulada es un único MultiPolygon, así
+// que se averigua a qué recinto pertenece cada polígono preguntando a SIGPAC en puntos interiores
+// del propio polígono (solo cuentan los recintos que ya están en la selección; se vota por mayoría).
+// Devuelve null en la posición de un polígono que no se haya podido asignar con seguridad.
+const asignarPoligonosAReferencias = async (
+  geojson: any,
+  refsValidas: Set<string>
+): Promise<{ poligonos: number[][][][]; refs: (string | null)[] }> => {
+  const poligonos: number[][][][] = []
+  ;(geojson?.features || []).forEach((f: any) => {
+    const g = f?.geometry
+    if (g?.type === 'Polygon') poligonos.push(g.coordinates)
+    else if (g?.type === 'MultiPolygon') g.coordinates.forEach((c: number[][][]) => poligonos.push(c))
+  })
+  const refs = await Promise.all(poligonos.map(async poly => {
+    const puntos = generarPuntosMuestra({ type: 'Polygon', coordinates: poly }, 5)
+    const votos = new Map<string, number>()
+    await Promise.all(puntos.map(([lat, lon]) =>
+      fetch(`${BACKEND}/sigpac/punto?lat=${lat}&lon=${lon}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => {
+          const props = d?.features?.[0]?.properties
+          if (!props) return
+          const k = formatRefSigpac(extraerRecinto(props))
+          if (refsValidas.has(k)) votos.set(k, (votos.get(k) || 0) + 1)
+        })
+        .catch(() => {})
+    ))
+    let mejor: string | null = null
+    let n = 0
+    votos.forEach((v, k) => { if (v > n) { n = v; mejor = k } })
+    return mejor
+  }))
+  return { poligonos, refs }
+}
+
 // Refresco de referencias: consulta /sigpac/punto en varios puntos interiores de CADA polígono de
 // la geometría ya guardada y devuelve los recintos que SIGPAC publica hoy bajo ella. Solo lee: la
 // geometría guardada no se modifica nunca.
@@ -5384,10 +5420,82 @@ export default function Home() {
   // Enrutador de clics del mapa: si el modo "+ AÑADIR RECINTO" está activo, acumula;
   // si no, hace una selección nueva (comportamiento de siempre). Referencia estable
   // (deps []) porque handleMapClick y handleAnadirRecinto también lo son.
+  // Quita UN recinto de la selección múltiple (por su referencia, o por el punto donde se hizo doble
+  // clic). Solo toca la selección en curso: nada guardado. Si era el último recinto, deselecciona todo.
+  const [quitandoRecinto, setQuitandoRecinto] = useState(false)
+  const quitandoRecintoRef = useRef(false)
+  const quitarRecintoDeSeleccion = useCallback(async (refObjetivo: string | null, punto?: { lat: number; lon: number }) => {
+    const info = parcelaInfoRef.current
+    const recintos: RecintoRef[] = info?.recintos || []
+    if (!info || info.origen === 'dibujado_mano' || recintos.length === 0 || quitandoRecintoRef.current) return
+    quitandoRecintoRef.current = true
+    setQuitandoRecinto(true)
+    try {
+      const { poligonos, refs } = await asignarPoligonosAReferencias(parcGeojsonRef.current, new Set(recintos.map(r => formatRefSigpac(r))))
+
+      let objetivo = refObjetivo
+      if (!objetivo && punto) {
+        // doble clic: ¿sobre qué polígono de la selección cayó?
+        const i = poligonos.findIndex(poly => puntoEnGeometria(punto.lon, punto.lat, { type: 'Polygon', coordinates: poly }))
+        if (i < 0) return // doble clic fuera de la selección: no pasa nada
+        objetivo = refs[i]
+        if (!objetivo) { setError('No se pudo identificar ese recinto; no se ha cambiado la selección.'); return }
+      }
+      if (!objetivo) return
+
+      if (recintos.length === 1) { deseleccionar(); return }
+
+      if (refs.some(r => r === null)) {
+        setError('No se pudo determinar a qué recinto pertenece parte del dibujo; no se ha cambiado la selección. Inténtalo de nuevo.')
+        return
+      }
+      const restantes = poligonos.filter((_, i) => refs[i] !== objetivo)
+      const recintosRestantes = recintos.filter(r => formatRefSigpac(r) !== objetivo)
+      if (restantes.length === poligonos.length || recintosRestantes.length === recintos.length) {
+        setError('No se pudo quitar ese recinto de la selección.')
+        return
+      }
+      const supTotal = recintosRestantes.reduce((acc, r) => acc + r.supHa, 0)
+      setError('')
+      setParcGeojson({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: restantes } }],
+      })
+      setParcelaInfo((prev: any) => ({
+        ...prev,
+        recintos: recintosRestantes,
+        municipio: recintosRestantes[0].municipio,
+        poligono: recintosRestantes[0].poligono,
+        parcela: recintosRestantes[0].parcela,
+        uso_sigpac: recintosRestantes[0].usoSigpac,
+        superficie: supTotal,
+      }))
+      setParcelaSupHa(supTotal)
+    } catch (e: any) {
+      setError('No se pudo quitar el recinto: ' + (e?.message || 'error desconocido'))
+    } finally {
+      quitandoRecintoRef.current = false
+      setQuitandoRecinto(false)
+    }
+  }, [])
+
+  // Clic simple = añade el recinto (tras una breve espera para distinguirlo del doble clic).
+  // Doble clic sobre un recinto ya seleccionado = lo quita de la selección.
+  const clicPendienteRef = useRef<{ t: number; lat: number; lon: number; timer: ReturnType<typeof setTimeout> } | null>(null)
   const onMapaClick = useCallback((lat: number, lon: number) => {
-    if (anadiendoRecintoRef.current) handleAnadirRecinto(lat, lon)
-    else handleMapClick(lat, lon)
-  }, [handleAnadirRecinto, handleMapClick])
+    if (!anadiendoRecintoRef.current) { handleMapClick(lat, lon); return }
+    const previo = clicPendienteRef.current
+    const ahora = Date.now()
+    if (previo && ahora - previo.t < 350 && Math.abs(previo.lat - lat) < 0.0003 && Math.abs(previo.lon - lon) < 0.0003) {
+      clearTimeout(previo.timer)
+      clicPendienteRef.current = null
+      quitarRecintoDeSeleccion(null, { lat, lon })
+      return
+    }
+    if (previo) { clearTimeout(previo.timer); handleAnadirRecinto(previo.lat, previo.lon) }
+    const timer = setTimeout(() => { clicPendienteRef.current = null; handleAnadirRecinto(lat, lon) }, 350)
+    clicPendienteRef.current = { t: ahora, lat, lon, timer }
+  }, [handleAnadirRecinto, handleMapClick, quitarRecintoDeSeleccion])
 
   // Busca una parcela escribiendo su referencia SIGPAC completa, p.ej. "41/7/0/0/6/7/3"
   // (Provincia/Municipio/Agregado/Zona/Poligono/Parcela/Recinto)
@@ -5937,9 +6045,17 @@ export default function Home() {
                         : parcelaInfo.recintos?.length > 1
                           ? <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 4 }}>
                               {parcelaInfo.recintos.map((r: RecintoRef, i: number) => (
-                                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                                  <span style={{ color: 'var(--text)' }}>{formatRefSigpac(r)}</span>
+                                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: 'var(--text)', flex: 1 }}>{formatRefSigpac(r)}</span>
                                   <span>{r.supHa.toFixed(4)} ha</span>
+                                  <button
+                                    onClick={() => quitarRecintoDeSeleccion(formatRefSigpac(r))}
+                                    disabled={quitandoRecinto}
+                                    title="Quitar este recinto de la selección"
+                                    aria-label={`Quitar el recinto ${formatRefSigpac(r)}`}
+                                    style={{ width: 20, height: 20, lineHeight: '16px', padding: 0, borderRadius: 4, border: '1px solid #6E2417', background: 'transparent', color: '#B3261E', fontWeight: 700, fontSize: 13, cursor: quitandoRecinto ? 'wait' : 'pointer', opacity: quitandoRecinto ? 0.5 : 1 }}>
+                                    ✕
+                                  </button>
                                 </div>
                               ))}
                             </div>
