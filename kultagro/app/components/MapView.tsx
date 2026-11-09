@@ -372,9 +372,11 @@ export default function MapView({
       const handler = (e: any) => onParcelaClick(e.latlng.lat, e.latlng.lng)
       clickHandlerRef.current = handler
       map.on('click', handler)
+      map.doubleClickZoom.disable() // el doble clic se usa para quitar un recinto de la selección
     } else {
       container.classList.remove('selecting')
       clickHandlerRef.current = null
+      map.doubleClickZoom.enable()
     }
   }, [seleccionando, onParcelaClick])
 
