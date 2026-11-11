@@ -100,6 +100,7 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
   const [buscando, setBuscando] = useState(false)
   const [calculando, setCalculando] = useState(false)
   const [error, setError] = useState('')
+  const [panelAbierto, setPanelAbierto] = useState(true) // solo móvil: hoja inferior desplegada o recogida
 
   const parcela = useMemo(() => parcelas.find(p => p.id === parcelaId), [parcelas, parcelaId])
   const caminoAncho = caminoAnchoManual ?? cabecera
@@ -214,9 +215,30 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
   }
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: isMobile ? 'column' : 'row', background: 'var(--bg)', overflow: 'hidden' }}>
-      {/* Panel de datos y resultados */}
-      <div style={{ width: isMobile ? '100%' : 360, flexShrink: 0, overflowY: 'auto', padding: 16, borderRight: isMobile ? 'none' : '1px solid var(--border)', maxHeight: isMobile ? '55%' : '100%', boxSizing: 'border-box' }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'row', background: 'var(--bg)', overflow: 'hidden', position: 'relative' }}>
+      {/* Panel de datos y resultados. Móvil: hoja inferior sobre el mapa, como en la pestaña MAPA, que se recoge
+          entera y desplegada nunca pasa del 50 % de la pestaña. */}
+      <div style={isMobile ? {
+        position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 1100,
+        height: panelAbierto ? '50%' : 52,
+        borderRadius: '16px 16px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.4)',
+        transition: 'height 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        background: 'var(--surface)', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxSizing: 'border-box',
+      } : {
+        width: 360, flexShrink: 0, overflowY: 'auto', padding: 16, borderRight: '1px solid var(--border)', height: '100%', boxSizing: 'border-box',
+      }}>
+        {isMobile && (
+          <div onClick={() => setPanelAbierto(p => !p)} role="button" aria-expanded={panelAbierto} aria-label={panelAbierto ? 'Recoger panel' : 'Desplegar panel'}
+            style={{ padding: '14px 16px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, cursor: 'pointer', flexShrink: 0, minHeight: 52, boxSizing: 'border-box' }}>
+            <div style={{ width: 44, height: 5, borderRadius: 3, background: 'var(--green)', opacity: 0.7 }} />
+            {!panelAbierto && resultado && (
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, color: 'var(--green)' }}>
+                {fmt(resultado.arboles)} árboles · líneas a {rumbo}°
+              </span>
+            )}
+          </div>
+        )}
+        <div style={isMobile ? { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 16px 16px', display: panelAbierto ? 'block' : 'none' } : undefined}>
         <div style={{ fontSize: 12, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--green)', marginBottom: 12, letterSpacing: '0.06em' }}>🌳 ANÁLISIS DE PLANTACIÓN</div>
 
         <label style={labelStyle}>1 · Parcela</label>
@@ -305,10 +327,11 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
             )}
           </div>
         )}
+        </div>
       </div>
 
-      {/* Mapa */}
-      <div style={{ flex: 1, minHeight: isMobile ? 300 : 0, position: 'relative' }}>
+      {/* Mapa (en móvil ocupa toda la pestaña y el panel se superpone) */}
+      <div style={isMobile ? { position: 'absolute', inset: 0 } : { flex: 1, minHeight: 0, position: 'relative' }}>
         <div ref={divRef} style={{ position: 'absolute', inset: 0 }} />
         {resultado && (
           <div style={{ position: 'absolute', top: 10, left: 50, zIndex: 1000, background: 'rgba(255,255,255,0.92)', color: '#111', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontFamily: 'var(--mono)', boxShadow: '0 1px 6px rgba(0,0,0,0.35)' }}>
