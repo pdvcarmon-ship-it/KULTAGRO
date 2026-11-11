@@ -225,23 +225,18 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
           {parcelas.map(p => <option key={p.id} value={p.id}>{p.nombre} · {fmt(p.supHa, 2)} ha</option>)}
         </select>
         {parcelas.length === 0 && <div style={ayudaStyle}>No hay parcelas guardadas con geometría.</div>}
-        <div style={ayudaStyle}>Si la parcela tiene varios recintos se trata como una sola. El análisis usa la geometría completa dibujada.</div>
 
         <div style={{ marginTop: 14 }}>
           <label style={labelStyle}>2 · Espacio alrededor (m)</label>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <div>
-              <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 3 }}>Cabeceras y medianeras</div>
+              <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 3 }}>Cabeceras</div>
               <input type="text" inputMode="decimal" value={cabecera} onChange={e => setCabecera(e.target.value)} style={inputStyle} />
             </div>
             <div>
               <div style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono)', marginBottom: 3 }}>Laterales</div>
               <input type="text" inputMode="decimal" value={lateral} onChange={e => setLateral(e.target.value)} style={inputStyle} />
             </div>
-          </div>
-          <div style={ayudaStyle}>
-            <b>Cabeceras y medianeras:</b> del inicio/final de las líneas hasta la linde, y ancho de los caminos de mitad de línea.<br />
-            <b>Laterales:</b> de la última línea hasta la linde.
           </div>
         </div>
 
@@ -262,7 +257,7 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
         <div style={{ marginTop: 14 }}>
           <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: 'var(--text)' }}>
             <input type="checkbox" checked={conCaminos} onChange={e => setConCaminos(e.target.checked)} />
-            4 · Poner caminos (opcional)
+            4 · Caminos (opcional)
           </label>
           {conCaminos && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -276,7 +271,6 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
               </div>
             </div>
           )}
-          <div style={ayudaStyle}>Los caminos van en perpendicular a las líneas, de lado a lado de la parcela, cada vez que una línea superaría la longitud máxima. No se planta en ellos. El ancho es por defecto el de las cabeceras y medianeras.</div>
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -309,9 +303,6 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
                 {resultado.arboles < mejorBusqueda.arboles ? ` · la actual tiene ${fmt(mejorBusqueda.arboles - resultado.arboles)} menos` : ' · es la que tienes ahora'}.
               </div>
             )}
-            <div style={{ ...ayudaStyle, marginTop: 10 }}>
-              Las direcciones opuestas dan el mismo resultado (N = S, E = O, NE = SO, SE = NO). Cálculo sobre terreno plano: no tiene en cuenta pendiente, luz, viento ni maquinaria; más árboles no siempre es mejor orientación.
-            </div>
           </div>
         )}
       </div>
