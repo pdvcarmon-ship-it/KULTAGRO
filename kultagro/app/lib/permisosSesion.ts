@@ -43,6 +43,7 @@ export const PERMISO_POR_PESTANA: Partial<Record<string, PermisoClave>> = {
   riego: 'riego.ver',
   cosechas: 'cosechas.ver',
   abonado: 'abonado.ver',
+  plantacion: 'parcelas.ver',        // reutiliza un permiso existente: no hay clave propia todavía
   permisos: 'permisos.gestionar',
   vincular_siex: 'parcelas.crear_editar',   // reutiliza un permiso existente: no hay clave propia todavía
 }
