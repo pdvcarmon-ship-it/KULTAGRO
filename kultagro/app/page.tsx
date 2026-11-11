@@ -30,6 +30,7 @@ const ImportarParcelasExcel = dynamic(() => import('./components/ImportarParcela
 const VincularSiexTab = dynamic(() => import('./components/VincularSiexTab'), { ssr: false })
 const RiegoTab = dynamic(() => import('./components/RiegoTab'), { ssr: false })
 const AbonadoTab = dynamic(() => import('./components/AbonadoTab'), { ssr: false })
+const AnalisisPlantacionTab = dynamic(() => import('./components/AnalisisPlantacionTab'), { ssr: false })
 const DonutChart = dynamic(() => import('./components/DonutChart'), { ssr: false })
 
 const MapView = dynamic(() => import('./components/MapView'), { ssr: false })
@@ -82,7 +83,7 @@ const ZONA_PCT: Record<number, number> = {1:100,2:90,3:80,4:70,5:60,6:50,7:40,8:
 
 type Estado = 'idle' | 'cargando_parcela' | 'parcela_ok' | 'buscando' | 'cargando_rgb' | 'calculando_zonas' | 'done' | 'error'
 type ModoVista = 'ninguna' | 'rgb' | 'zonas'
-type Pestaña = 'mapa' | 'mis_parcelas' | 'tratamientos' | 'stock' | 'personal' | 'equipos' | 'riego' | 'tareas' | 'cosechas' | 'abonado' | 'permisos' | 'vincular_siex'
+type Pestaña = 'mapa' | 'mis_parcelas' | 'tratamientos' | 'stock' | 'personal' | 'equipos' | 'riego' | 'tareas' | 'cosechas' | 'abonado' | 'plantacion' | 'permisos' | 'vincular_siex'
 
 // Abonado, Corrector nutricional y Bioestimulante se han retirado: ya existe el Plan de Abonado
 // (pestaña Abonado) para esos casos. Los tratamientos antiguos con esos tipos se conservan tal
@@ -5728,11 +5729,11 @@ export default function Home() {
               </button>
               {menuAbierto && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 6000, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0 0 10px 10px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)', minWidth: 220 }}>
-                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
                     <button key={tab} onClick={() => { setPestana(tab); setMenuAbierto(false) }}
                       style={{ display: 'block', width: '100%', padding: '15px 20px', border: 'none', background: pestana === tab ? 'rgba(31, 74, 40, 1)' : 'transparent', fontFamily: 'var(--mono)', fontSize: 14, fontWeight: pestana === tab ? 700 : 400, cursor: 'pointer', color: 'var(--text)', textAlign: 'left', borderLeft: `3px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, borderBottom: '1px solid var(--border)' }}
                     >
-                      {tab === 'mapa' ? '🗺  MAPA' : tab === 'mis_parcelas' ? '📁  MIS PARCELAS' : tab === 'tratamientos' ? '🧪  TRATAMIENTOS' : tab === 'stock' ? '📦  STOCK' : tab === 'tareas' ? '📋  TAREAS' : tab === 'riego' ? '💧  RIEGO' : tab === 'cosechas' ? '🌾  COSECHAS' : tab === 'personal' ? '👷  PERSONAL' : tab === 'equipos' ? '🚜  EQUIPOS' : tab === 'abonado' ? '🌱  ABONADO' : '🔐  PERMISOS'}
+                      {tab === 'mapa' ? '🗺  MAPA' : tab === 'mis_parcelas' ? '📁  MIS PARCELAS' : tab === 'tratamientos' ? '🧪  TRATAMIENTOS' : tab === 'stock' ? '📦  STOCK' : tab === 'tareas' ? '📋  TAREAS' : tab === 'riego' ? '💧  RIEGO' : tab === 'cosechas' ? '🌾  COSECHAS' : tab === 'personal' ? '👷  PERSONAL' : tab === 'equipos' ? '🚜  EQUIPOS' : tab === 'abonado' ? '🌱  ABONADO' : tab === 'plantacion' ? '🌳  PLANTACIÓN' : '🔐  PERMISOS'}
                     </button>
                   ))}
                 </div>
@@ -5743,15 +5744,15 @@ export default function Home() {
           {/* Pestaña activa (movil) o tabs (desktop) */}
           {isMobile ? (
             <span style={{ flex: 1, fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, color: 'var(--green)', textShadow: 'var(--green-outline)', paddingLeft: 4 }}>
-              {pestana === 'mapa' ? '🗺 MAPA' : pestana === 'mis_parcelas' ? '📁 MIS PARCELAS' : pestana === 'tratamientos' ? '🧪 TRATAMIENTOS' : pestana === 'stock' ? '📦 STOCK' : pestana === 'tareas' ? '📋 TAREAS' : pestana === 'riego' ? '💧 RIEGO' : pestana === 'cosechas' ? '🌾 COSECHAS' : pestana === 'personal' ? '👷 PERSONAL' : pestana === 'equipos' ? '🚜 EQUIPOS' : pestana === 'abonado' ? '🌱 ABONADO' : '🔐 PERMISOS'}
+              {pestana === 'mapa' ? '🗺 MAPA' : pestana === 'mis_parcelas' ? '📁 MIS PARCELAS' : pestana === 'tratamientos' ? '🧪 TRATAMIENTOS' : pestana === 'stock' ? '📦 STOCK' : pestana === 'tareas' ? '📋 TAREAS' : pestana === 'riego' ? '💧 RIEGO' : pestana === 'cosechas' ? '🌾 COSECHAS' : pestana === 'personal' ? '👷 PERSONAL' : pestana === 'equipos' ? '🚜 EQUIPOS' : pestana === 'abonado' ? '🌱 ABONADO' : pestana === 'plantacion' ? '🌳 PLANTACIÓN' : '🔐 PERMISOS'}
             </span>
           ) : (
             <div style={{ display: 'flex', flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'thin' }}>
-              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
                 <button key={tab} onClick={() => setPestana(tab)}
                   style={{ padding: '12px 20px', border: 'none', background: 'transparent', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: 'var(--text)', borderBottom: `2px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, letterSpacing: '0.06em', transition: 'all 0.15s', whiteSpace: 'nowrap', flexShrink: 0 }}
                 >
-                  {tab === 'mapa' ? '🗺 MAPA' : tab === 'mis_parcelas' ? '📁 MIS PARCELAS' : tab === 'tratamientos' ? '🧪 TRATAMIENTOS' : tab === 'stock' ? '📦 STOCK' : tab === 'tareas' ? '📋 TAREAS' : tab === 'riego' ? '💧 RIEGO' : tab === 'cosechas' ? '🌾 COSECHAS' : tab === 'personal' ? '👷 PERSONAL' : tab === 'equipos' ? '🚜 EQUIPOS' : tab === 'abonado' ? '🌱 ABONADO' : tab === 'permisos' ? '🔐 PERMISOS' : '🔗 VINCULAR SIEX'}
+                  {tab === 'mapa' ? '🗺 MAPA' : tab === 'mis_parcelas' ? '📁 MIS PARCELAS' : tab === 'tratamientos' ? '🧪 TRATAMIENTOS' : tab === 'stock' ? '📦 STOCK' : tab === 'tareas' ? '📋 TAREAS' : tab === 'riego' ? '💧 RIEGO' : tab === 'cosechas' ? '🌾 COSECHAS' : tab === 'personal' ? '👷 PERSONAL' : tab === 'equipos' ? '🚜 EQUIPOS' : tab === 'abonado' ? '🌱 ABONADO' : tab === 'plantacion' ? '🌳 PLANTACIÓN' : tab === 'permisos' ? '🔐 PERMISOS' : '🔗 VINCULAR SIEX'}
                 </button>
               ))}
             </div>
@@ -9016,6 +9017,13 @@ export default function Home() {
             datosExplotacionPorFinca={datosExplotacionPorFinca} onEditarDatosExplotacion={abrirFormDatosExplotacion}
             activo={pestana === 'abonado'} tareaAbonadoAAbrir={tareaAbonadoAAbrir} onConsumirTareaAbonado={() => setTareaAbonadoAAbrir(null)}
             onPlanGuardado={onAbonadoPlanGuardado} />
+
+        {pestana === 'plantacion' && (
+          <AnalisisPlantacionTab
+            isMobile={isMobile}
+            parcelas={misParcelasVisibles.filter(p => p.geojson).map(p => ({ id: p.id, nombre: p.nombre, supHa: p.supHa, cultivo: p.cultivo, geojson: p.geojson }))}
+          />
+        )}
 
         {pestana === 'cosechas' && (() => {
           const cultivosDisponibles = Array.from(new Set(cosechas.map(c => c.cultivo))).sort((a, b) => a.localeCompare(b))
