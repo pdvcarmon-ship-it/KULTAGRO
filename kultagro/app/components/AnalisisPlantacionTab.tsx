@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { analizarPlantacion, azimutLineas, nombreRumbo, validarParams, type ResultadoOrientacion } from '../lib/analisisPlantacion'
 import BrujulaOrientacion from './BrujulaOrientacion'
+import { renderizarImagen, canvasABlob, type CapasImagen } from '../lib/exportImagen'
 
 const ANGULOS_BUSQUEDA = Array.from({ length: 12 }, (_, i) => i * 15) // 0°, 15°… 165°
 
@@ -100,6 +101,12 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
   const [buscando, setBuscando] = useState(false)
   const [calculando, setCalculando] = useState(false)
   const [error, setError] = useState('')
+  const [exportAbierto, setExportAbierto] = useState(false)
+  const [capasExport, setCapasExport] = useState<CapasImagen>({ satelite: true, contorno: true, arboles: true, caminos: true, brujula: true, datos: true })
+  const [exportBlob, setExportBlob] = useState<Blob | null>(null)
+  const [exportUrl, setExportUrl] = useState('')
+  const [exportCargando, setExportCargando] = useState(false)
+  const [exportAviso, setExportAviso] = useState('')
   const [panelAbierto, setPanelAbierto] = useState(true) // solo móvil: hoja inferior desplegada o recogida
 
   const parcela = useMemo(() => parcelas.find(p => p.id === parcelaId), [parcelas, parcelaId])
@@ -192,6 +199,53 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
 
   // Si cambian los datos, la "mejor orientación" encontrada deja de valer
   useEffect(() => { setMejorBusqueda(null) }, [parcela, params])
+
+  // Vista previa de la imagen a exportar: se redibuja al cambiar las capas elegidas
+  useEffect(() => {
+    if (!exportAbierto || !resultado || !parcela?.geojson) return
+    let cancelado = false
+    setExportCargando(true)
+    const t = setTimeout(async () => {
+      try {
+        const { canvas, sateliteOk } = await renderizarImagen({
+          geojson: parcela.geojson, puntos: resultado.puntos, caminosGeo: resultado.caminosGeo,
+          espaciadoM: Math.min(num(distArboles) || 1, num(distLineas) || 1), capas: capasExport, rumbo,
+          titulo: parcela.nombre,
+          lineasTexto: [
+            `${fmt(resultado.arboles)} árboles · ${fmt(resultado.arbolesHa, 1)} árboles/ha · ${fmt(resultado.lineas)} líneas${conCaminos ? ` · ${resultado.caminos} camino${resultado.caminos === 1 ? '' : 's'}` : ''}`,
+            `Parcela ${fmt(supHa, 2)} ha · marco ${distArboles} × ${distLineas} m · cabeceras ${cabecera} m · laterales ${lateral} m`,
+            `Líneas a ${rumbo}° (${nombreRumbo(rumbo)})`,
+          ],
+        })
+        const blob = await canvasABlob(canvas)
+        if (cancelado) return
+        setExportBlob(blob)
+        setExportUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob) })
+        setExportAviso(sateliteOk ? '' : 'No se pudo cargar el fondo de satélite; la imagen sale sin él.')
+      } catch (e: any) {
+        if (!cancelado) setExportAviso(e?.message || 'No se pudo generar la imagen.')
+      } finally {
+        if (!cancelado) setExportCargando(false)
+      }
+    }, 150)
+    return () => { cancelado = true; clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportAbierto, capasExport, resultado, rumbo])
+
+  const cerrarExport = () => {
+    setExportAbierto(false)
+    setExportBlob(null)
+    setExportUrl(prev => { if (prev) URL.revokeObjectURL(prev); return '' })
+  }
+
+  const descargarImagen = () => {
+    if (!exportBlob || !parcela) return
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(exportBlob)
+    a.download = `plantacion-${parcela.nombre.replace(/[^\w\-]+/g, '_')}-${rumbo}grados.png`
+    document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+  }
 
   // Prueba una orientación cada 15° y deja la brújula en la que más árboles da
   const buscarMejor = () => {
@@ -319,6 +373,10 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
                 {fmt(resultado.arbolesHa, 1)} árboles/ha · {fmt(resultado.lineas)} líneas{conCaminos ? ` · ${resultado.caminos} camino${resultado.caminos === 1 ? '' : 's'}` : ''}
               </div>
             </div>
+            <button onClick={() => setExportAbierto(true)}
+              style={{ width: '100%', marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--green)', border: 'none', color: '#fff', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 11, letterSpacing: '0.06em', cursor: 'pointer' }}>
+              📷 EXPORTAR IMAGEN
+            </button>
             {mejorBusqueda && (
               <div style={{ ...ayudaStyle, marginTop: 8 }}>
                 ⭐ Mejor orientación probada (cada 15°): <b>{mejorBusqueda.angulo}°</b> con {fmt(mejorBusqueda.arboles)} árboles
@@ -339,6 +397,45 @@ export default function AnalisisPlantacionTab({ parcelas, isMobile }: Props) {
           </div>
         )}
       </div>
+      {exportAbierto && resultado && (
+        <div onClick={cerrarExport} style={{ position: 'fixed', inset: 0, zIndex: 3000, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-label="Exportar imagen"
+            style={{ background: 'var(--surface)', color: 'var(--text)', borderRadius: 12, width: '100%', maxWidth: 980, maxHeight: '94vh', display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: 'hidden', boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}>
+            <div style={{ flex: 1, minHeight: isMobile ? 160 : 0, background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10, overflow: 'auto', position: 'relative' }}>
+              {exportUrl && <img src={exportUrl} alt="Vista previa de la imagen" style={{ maxWidth: '100%', maxHeight: isMobile ? '36vh' : '86vh', objectFit: 'contain', opacity: exportCargando ? 0.5 : 1, transition: 'opacity .15s' }} />}
+              {exportCargando && <div style={{ position: 'absolute', fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)' }}>Preparando imagen…</div>}
+            </div>
+            <div style={{ width: isMobile ? '100%' : 260, flexShrink: 0, padding: 16, boxSizing: 'border-box', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 12, fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--green)', letterSpacing: '0.06em' }}>📷 EXPORTAR IMAGEN</div>
+              <div style={{ ...labelStyle, marginTop: 4, marginBottom: 0 }}>Qué se ve</div>
+              {([
+                ['satelite', 'Fondo de satélite'],
+                ['contorno', 'Contorno de la parcela'],
+                ['arboles', 'Árboles'],
+                ['caminos', conCaminos ? 'Caminos' : 'Caminos (no activados)'],
+                ['brujula', 'Brújula con la dirección'],
+                ['datos', 'Datos (título y cifras)'],
+              ] as [keyof CapasImagen, string][]).map(([k, txt]) => (
+                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', opacity: k === 'caminos' && !conCaminos ? 0.5 : 1 }}>
+                  <input type="checkbox" checked={capasExport[k]} disabled={k === 'caminos' && !conCaminos}
+                    onChange={e => setCapasExport(c => ({ ...c, [k]: e.target.checked }))} />
+                  {txt}
+                </label>
+              ))}
+              {exportAviso && <div role="alert" style={{ fontSize: 11, fontFamily: 'var(--mono)', color: '#6E2417', background: 'rgba(110, 36, 23,0.08)', border: '1px solid rgba(110, 36, 23,0.3)', borderRadius: 6, padding: '6px 8px' }}>⚠ {exportAviso}</div>}
+              <div style={{ flex: 1 }} />
+              <button onClick={descargarImagen} disabled={!exportBlob || exportCargando}
+                style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--green)', border: 'none', color: '#fff', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12, letterSpacing: '0.06em', cursor: 'pointer', opacity: !exportBlob || exportCargando ? 0.6 : 1 }}>
+                ⬇ DESCARGAR PNG
+              </button>
+              <button onClick={cerrarExport}
+                style={{ padding: '8px 14px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer' }}>
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
