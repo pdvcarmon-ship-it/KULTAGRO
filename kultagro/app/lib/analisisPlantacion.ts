@@ -45,6 +45,16 @@ export const ORIENTACIONES: { angulo: number; nombre: string }[] = [
   { angulo: 135, nombre: 'Sureste-Noroeste (135°)' },
 ]
 
+// Rumbo en grados → 0–359 (admite negativos y más de 360)
+export const normalizarRumbo = (g: number): number => ((Math.round(g) % 360) + 360) % 360
+
+// Nombre de la dirección más cercana de la rosa de 16 vientos (N, NNE, NE…), en español
+const VIENTOS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO']
+export const nombreRumbo = (g: number): string => VIENTOS[Math.round(normalizarRumbo(g) / 22.5) % 16]
+
+// Las líneas no tienen sentido: 200° y 20° dan el mismo reparto. Se calcula siempre en 0–179°.
+export const azimutLineas = (rumbo: number): number => normalizarRumbo(rumbo) % 180
+
 const M_LAT = 110574
 const M_LON = 111320
 const EPS = 1e-9

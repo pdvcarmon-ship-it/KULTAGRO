@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { analizarPlantacion, validarParams, poligonosDeGeojson } from './analisisPlantacion'
+import { analizarPlantacion, validarParams, poligonosDeGeojson, normalizarRumbo, nombreRumbo, azimutLineas } from './analisisPlantacion'
 
 // Rectángulo de ancho×alto metros cerca del ecuador (1° lon ≈ 111320 m, 1° lat ≈ 110574 m)
 const rect = (w: number, h: number) => {
@@ -82,5 +82,27 @@ describe('analizarPlantacion', () => {
     const entera = analizarPlantacion(rect(100, 60), P).orientaciones.find(o => o.angulo === 90)!.arboles
     expect(Math.abs(unida - entera)).toBeLessThanOrEqual(12) // se tratan como una sola parcela
     expect(poligonosDeGeojson(dosMitades)).toHaveLength(2)
+  })
+})
+
+describe('rumbo de la brújula', () => {
+  it('normaliza y convierte el rumbo en azimut de líneas (0–179°)', () => {
+    expect(normalizarRumbo(-90)).toBe(270)
+    expect(normalizarRumbo(360)).toBe(0)
+    expect(azimutLineas(200)).toBe(20)
+    expect(azimutLineas(90)).toBe(90)
+    expect(azimutLineas(270)).toBe(90)
+  })
+  it('da nombre a la dirección', () => {
+    expect(nombreRumbo(0)).toBe('N')
+    expect(nombreRumbo(90)).toBe('E')
+    expect(nombreRumbo(225)).toBe('SO')
+    expect(nombreRumbo(359)).toBe('N')
+  })
+  it('admite un ángulo cualquiera y rumbos opuestos dan el mismo resultado', () => {
+    const a = analizarPlantacion(rect(200, 40), P, [azimutLineas(20)]).orientaciones[0]
+    const b = analizarPlantacion(rect(200, 40), P, [azimutLineas(200)]).orientaciones[0]
+    expect(a.arboles).toBe(b.arboles)
+    expect(a.arboles).toBeGreaterThan(0)
   })
 })
