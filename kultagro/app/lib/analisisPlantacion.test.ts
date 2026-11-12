@@ -106,3 +106,80 @@ describe('rumbo de la brújula', () => {
     expect(a.arboles).toBeGreaterThan(0)
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+// Cabeceras pintadas, zonas de exclusión y sectores
+// ---------------------------------------------------------------------------------------------
+import { dominioPlantacion } from './sectoresPlantacion'
+
+const M = (lon: number, lat: number) => [lon * 111320, lat * 110574]
+const areaRingM = (ring: number[][]) => { let s = 0; for (let i = 0; i < ring.length; i++) { const a = M(ring[i][0], ring[i][1]), b = M(ring[(i + 1) % ring.length][0], ring[(i + 1) % ring.length][1]); s += a[0] * b[1] - b[0] * a[1] } return Math.abs(s) / 2 }
+const areaMPm2 = (mp: number[][][][]) => mp.reduce((acc, poly) => acc + poly.reduce((a, r, i) => a + (i === 0 ? areaRingM(r) : -areaRingM(r)), 0), 0)
+const cuadro = (x0: number, y0: number, x1: number, y1: number) => [[x0 / 111320, y0 / 110574], [x1 / 111320, y0 / 110574], [x1 / 111320, y1 / 110574], [x0 / 111320, y1 / 110574], [x0 / 111320, y0 / 110574]] as [number, number][]
+
+describe('cabeceras', () => {
+  it('las franjas de cabecera ocupan el ancho de la cabecera en cada extremo de línea', () => {
+    const eo = analizarPlantacion(rect(100, 60), P).orientaciones.find(o => o.angulo === 90)!
+    // líneas E-O: cabecera de 10 m en el extremo este y en el oeste, a lo largo de los 60 m de ancho
+    const area = eo.cabecerasGeo.reduce((a, ring) => a + areaRingM(ring.map(([la, lo]) => [lo, la])), 0)
+    expect(area).toBeGreaterThan(2 * 10 * 60 * 0.98); expect(area).toBeLessThan(2 * 10 * 60 * 1.02)
+  })
+  it('sin cabecera no hay franjas, y se pueden omitir al probar muchos ángulos', () => {
+    expect(analizarPlantacion(rect(100, 60), { ...P, cabecera: 0 }).orientaciones[0].cabecerasGeo).toHaveLength(0)
+    expect(analizarPlantacion(rect(100, 60), P, [90], false).orientaciones[0].cabecerasGeo).toHaveLength(0)
+  })
+})
+
+describe('zonas de exclusión', () => {
+  const parcela = rect(100, 60)
+  it('el dominio es la parcela menos la zona excluida, aunque se salga de la parcela', () => {
+    const d = dominioPlantacion(parcela, { exclusiones: [cuadro(40, 20, 60, 40)] })
+    expect(areaMPm2(d.geometria.coordinates)).toBeGreaterThan((6000 - 400) * 0.99); expect(areaMPm2(d.geometria.coordinates)).toBeLessThan((6000 - 400) * 1.01)
+    const fuera = dominioPlantacion(parcela, { exclusiones: [cuadro(80, 40, 140, 100)] }) // solo 20×20 cae dentro
+    expect(areaMPm2(fuera.geometria.coordinates)).toBeGreaterThan((6000 - 400) * 0.99); expect(areaMPm2(fuera.geometria.coordinates)).toBeLessThan((6000 - 400) * 1.01)
+  })
+  it('no hay árboles dentro y se respetan cabeceras y laterales alrededor', () => {
+    const d = dominioPlantacion(parcela, { exclusiones: [cuadro(40, 20, 60, 40)] })
+    const eo = analizarPlantacion(d.geometria, P).orientaciones.find(o => o.angulo === 90)!
+    expect(eo.arboles).toBeGreaterThan(100)
+    for (let i = 0; i < eo.puntos.length; i += 2) {
+      const y = eo.puntos[i] * 110574, x = eo.puntos[i + 1] * 111320 // el centro de la parcela está en (50,30) m, el plano de la prueba parte de (0,0)
+      // zona excluida (40..60, 20..40): a menos de la cabecera (10 m) en el sentido de la línea, solo vale si la línea queda a ≥ lateral (5 m)
+      const enBandaX = x > 40 - 10 + 0.1 && x < 60 + 10 - 0.1
+      if (enBandaX) expect(y <= 20 - 5 + 0.1 || y >= 40 + 5 - 0.1).toBe(true)
+    }
+  })
+  it('con una zona excluida caben menos árboles', () => {
+    const sin = analizarPlantacion(parcela, P, [90]).orientaciones[0].arboles
+    const con = analizarPlantacion(dominioPlantacion(parcela, { exclusiones: [cuadro(40, 20, 60, 40)] }).geometria, P, [90]).orientaciones[0].arboles
+    expect(con).toBeLessThan(sin)
+  })
+})
+
+describe('sectores', () => {
+  const parcela = rect(100, 60)
+  const mitadOeste = cuadro(-10, -10, 50, 70) // se sale de la parcela: se recorta
+  const mitadEste = cuadro(50, -10, 110, 70)
+  it('el sector se recorta a la parcela', () => {
+    const a = dominioPlantacion(parcela, { sector: mitadOeste })
+    expect(areaMPm2(a.geometria.coordinates)).toBeGreaterThan(3000 * 0.99); expect(areaMPm2(a.geometria.coordinates)).toBeLessThan(3000 * 1.01)
+  })
+  it('el siguiente sector no pisa al anterior y, si hay camino, deja su ancho libre', () => {
+    const sinCamino = dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste] })
+    expect(areaMPm2(sinCamino.geometria.coordinates)).toBeGreaterThan(3000 * 0.99)
+    const conCamino = dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste], caminoAnterior: { anillo: mitadOeste, ancho: 6 } })
+    expect(areaMPm2(conCamino.geometria.coordinates)).toBeGreaterThan((3000 - 360) * 0.98); expect(areaMPm2(conCamino.geometria.coordinates)).toBeLessThan((3000 - 360) * 1.02)
+    expect(conCamino.camino).not.toBeNull()
+    expect(areaMPm2(conCamino.camino!)).toBeGreaterThan(360 * 0.98); expect(areaMPm2(conCamino.camino!)).toBeLessThan(360 * 1.02)
+  })
+  it('cada sector se analiza por separado con su propio marco y dirección', () => {
+    const a = analizarPlantacion(dominioPlantacion(parcela, { sector: mitadOeste }).geometria, P, [0]).orientaciones[0]
+    const b = analizarPlantacion(dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste] }).geometria, { ...P, distArboles: 4, distLineas: 6 }, [90]).orientaciones[0]
+    expect(a.arboles).toBeGreaterThan(20); expect(b.arboles).toBeGreaterThan(20)
+    expect(a.angulo).toBe(0); expect(b.angulo).toBe(90)
+  })
+  it('un sector fuera de la parcela deja el dominio vacío', () => {
+    const d = dominioPlantacion(parcela, { sector: cuadro(200, 200, 300, 300) })
+    expect(d.supHa).toBe(0); expect(d.geometria.coordinates).toHaveLength(0)
+  })
+})

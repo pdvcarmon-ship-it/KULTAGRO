@@ -29,6 +29,7 @@ export interface ResultadoOrientacion {
   caminos: number
   puntos: Float64Array       // [lat, lon, lat, lon, …] de cada árbol
   caminosGeo: [number, number][][] // anillos [lat, lon] de las bandas de camino recortadas a la parcela
+  cabecerasGeo: [number, number][][] // anillos [lat, lon] de las franjas de cabecera (extremos de las líneas)
 }
 
 export interface AnalisisPlantacion {
@@ -147,7 +148,8 @@ export const validarParams = (p: ParamsPlantacion): string | null => {
 
 const PASOS_OFFSET = 6 // desplazamientos de la malla que se prueban en cada eje
 
-export const analizarPlantacion = (geojson: any, params: ParamsPlantacion, angulos: number[] = ORIENTACIONES.map(o => o.angulo)): AnalisisPlantacion => {
+// conGeometria = false evita calcular los polígonos de caminos y cabeceras (útil al probar muchos ángulos)
+export const analizarPlantacion = (geojson: any, params: ParamsPlantacion, angulos: number[] = ORIENTACIONES.map(o => o.angulo), conGeometria = true): AnalisisPlantacion => {
   const error = validarParams(params)
   if (error) throw new Error(error)
   const poligonos = poligonosDeGeojson(geojson)
@@ -258,8 +260,35 @@ export const analizarPlantacion = (geojson: any, params: ParamsPlantacion, angul
         const tramos = intervalosEnLinea(aristasVU, (r0 + r1) / 2) // tramos en u dentro de la parcela
         if (!tramos.length) continue
         caminos++
-        for (const [u1, u2] of tramos) {
+        if (conGeometria) for (const [u1, u2] of tramos) {
           caminosGeo.push([deUV(u1, r0), deUV(u2, r0), deUV(u2, r1), deUV(u1, r1)].map(([x, y]) => aGrados(x, y)))
+        }
+      }
+    }
+
+    // Cabeceras: franjas de ancho `cab` a lo largo de cada extremo de línea, hasta la linde (o hasta el hueco
+    // de una zona excluida). Se descompone la parcela en tramos entre vértices consecutivos: en cada uno los
+    // extremos de las líneas son rectas y la franja es un trapecio exacto.
+    const cabecerasGeo: [number, number][][] = []
+    if (conGeometria && cab > 0) {
+      const us = Array.from(new Set(aristas.flatMap(e => [e[0], e[2]]))).sort((a, b) => a - b)
+      const aGeo = (pts: [number, number][]): [number, number][] => pts.map(([u, v]) => { const [x, y] = deUV(u, v); return aGrados(x, y) })
+      for (let i = 0; i + 1 < us.length; i++) {
+        const ui = us[i], uj = us[i + 1]
+        if (uj - ui < 1e-6) continue
+        const um = (ui + uj) / 2
+        const cr: { vm: number; vi: number; vj: number }[] = []
+        for (const [u1, v1, u2, v2] of aristas) {
+          if ((u1 <= um) !== (u2 <= um)) {
+            const k = (v2 - v1) / (u2 - u1)
+            cr.push({ vm: v1 + (um - u1) * k, vi: v1 + (ui - u1) * k, vj: v1 + (uj - u1) * k })
+          }
+        }
+        cr.sort((a, b) => a.vm - b.vm)
+        for (let c = 0; c + 1 < cr.length; c += 2) {
+          const A = cr[c], B = cr[c + 1]
+          cabecerasGeo.push(aGeo([[ui, A.vi], [uj, A.vj], [uj, Math.min(A.vj + cab, B.vj)], [ui, Math.min(A.vi + cab, B.vi)]]))
+          cabecerasGeo.push(aGeo([[ui, Math.max(B.vi - cab, A.vi)], [uj, Math.max(B.vj - cab, A.vj)], [uj, B.vj], [ui, B.vi]]))
         }
       }
     }
@@ -268,7 +297,7 @@ export const analizarPlantacion = (geojson: any, params: ParamsPlantacion, angul
       angulo, arboles,
       arbolesHa: supHa > 0 ? arboles / supHa : 0,
       lineas: filas.length,
-      caminos, caminosGeo,
+      caminos, caminosGeo, cabecerasGeo,
       puntos: Float64Array.from(buf),
     }
   })
