@@ -9021,7 +9021,8 @@ export default function Home() {
         {pestana === 'plantacion' && (
           <AnalisisPlantacionTab
             isMobile={isMobile}
-            parcelas={misParcelasVisibles.filter(p => p.geojson).map(p => ({ id: p.id, nombre: p.nombre, supHa: p.supHa, cultivo: p.cultivo, geojson: p.geojson }))}
+            fincas={fincasVisibles.map(f => ({ id: f.id, nombre: f.nombre }))}
+            parcelas={misParcelasVisibles.filter(p => p.geojson).map(p => ({ id: p.id, nombre: p.nombre, supHa: p.supHa, cultivo: p.cultivo, fincaId: p.fincaId, geojson: p.geojson }))}
           />
         )}
 
