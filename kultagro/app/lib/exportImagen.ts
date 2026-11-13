@@ -23,7 +23,7 @@ export interface ConjuntoImagen {
   caminosGeo: [number, number][][]        // caminos interiores, anillos [lat, lon]
   cabecerasGeo: [number, number][][]      // cabeceras, anillos [lat, lon]
   caminoEntreSectoresGeo?: [number, number][][] // camino con el sector anterior, anillos [lat, lon]
-  contorno?: [number, number][]           // contorno del sector, [lat, lon]
+  contornos?: [number, number][][]        // contorno(s) del sector (anillos exteriores), [lat, lon]
   rumbo: number                           // dirección de las líneas, 0 = N, sentido horario
 }
 
@@ -192,9 +192,11 @@ export const renderizarImagen = async (o: OpcionesImagen): Promise<ResultadoImag
   const varios = o.conjuntos.length > 1
   if (varios && o.capas.contorno) {
     for (const c of o.conjuntos) {
-      if (!c.contorno) continue
-      anillo(c.contorno)
-      ctx.lineWidth = 3 * s; ctx.strokeStyle = c.color; ctx.lineJoin = 'round'; ctx.stroke()
+      if (!c.contornos) continue
+      for (const ring of c.contornos) {
+        anillo(ring)
+        ctx.lineWidth = 3 * s; ctx.strokeStyle = c.color; ctx.lineJoin = 'round'; ctx.stroke()
+      }
     }
   }
 
@@ -216,8 +218,10 @@ export const renderizarImagen = async (o: OpcionesImagen): Promise<ResultadoImag
   // ---- Etiquetas y flecha de dirección de cada sector ----
   if (varios && (o.capas.brujula || o.capas.contorno)) {
     for (const c of o.conjuntos) {
-      if (!c.contorno || !c.contorno.length) continue
-      const cla = c.contorno.reduce((a, p) => a + p[0], 0) / c.contorno.length, clo = c.contorno.reduce((a, p) => a + p[1], 0) / c.contorno.length
+      if (!c.contornos || !c.contornos.length) continue
+      // etiqueta en el centro del anillo más grande
+      const grande = c.contornos.reduce((m, r) => (r.length > m.length ? r : m), c.contornos[0])
+      const cla = grande.reduce((a, p) => a + p[0], 0) / grande.length, clo = grande.reduce((a, p) => a + p[1], 0) / grande.length
       const [cx, cy] = pt(clo, cla)
       if (o.capas.brujula) {
         const L = 42 * s, rad = (c.rumbo * Math.PI) / 180

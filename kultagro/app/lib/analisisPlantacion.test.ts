@@ -110,7 +110,7 @@ describe('rumbo de la brújula', () => {
 // ---------------------------------------------------------------------------------------------
 // Cabeceras pintadas, zonas de exclusión y sectores
 // ---------------------------------------------------------------------------------------------
-import { dominioPlantacion } from './sectoresPlantacion'
+import { dominioPlantacion, cortarConLinea } from './sectoresPlantacion'
 
 const M = (lon: number, lat: number) => [lon * 111320, lat * 110574]
 const areaRingM = (ring: number[][]) => { let s = 0; for (let i = 0; i < ring.length; i++) { const a = M(ring[i][0], ring[i][1]), b = M(ring[(i + 1) % ring.length][0], ring[(i + 1) % ring.length][1]); s += a[0] * b[1] - b[0] * a[1] } return Math.abs(s) / 2 }
@@ -167,7 +167,7 @@ describe('sectores', () => {
   it('el siguiente sector no pisa al anterior y, si hay camino, deja su ancho libre', () => {
     const sinCamino = dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste] })
     expect(areaMPm2(sinCamino.geometria.coordinates)).toBeGreaterThan(3000 * 0.99)
-    const conCamino = dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste], caminoAnterior: { anillo: mitadOeste, ancho: 6 } })
+    const conCamino = dominioPlantacion(parcela, { sector: mitadEste, sectoresPrevios: [mitadOeste], caminoAnterior: { geom: mitadOeste, ancho: 6 } })
     expect(areaMPm2(conCamino.geometria.coordinates)).toBeGreaterThan((3000 - 360) * 0.98); expect(areaMPm2(conCamino.geometria.coordinates)).toBeLessThan((3000 - 360) * 1.02)
     expect(conCamino.camino).not.toBeNull()
     expect(areaMPm2(conCamino.camino!)).toBeGreaterThan(360 * 0.98); expect(areaMPm2(conCamino.camino!)).toBeLessThan(360 * 1.02)
@@ -181,5 +181,43 @@ describe('sectores', () => {
   it('un sector fuera de la parcela deja el dominio vacío', () => {
     const d = dominioPlantacion(parcela, { sector: cuadro(200, 200, 300, 300) })
     expect(d.supHa).toBe(0); expect(d.geometria.coordinates).toHaveLength(0)
+  })
+})
+
+describe('recortar la parcela con una línea (como en los sectores de riego)', () => {
+  const parcela = rect(100, 60)
+  const linea = (pts: number[][]) => pts.map(([x, y]) => [x / 111320, y / 110574] as [number, number])
+  const restante = dominioPlantacion(parcela).geometria.coordinates
+
+  it('una línea que cruza la parcela la parte en dos trozos que suman la parcela', () => {
+    const r = cortarConLinea(restante, linea([[50, -10], [50, 70]]))
+    expect(r.error).toBeUndefined()
+    expect(r.piezas).toHaveLength(2)
+    const total = r.piezas.reduce((a, p) => a + areaMPm2(p.mp), 0)
+    expect(total).toBeGreaterThan(6000 * 0.995); expect(total).toBeLessThanOrEqual(6000)
+    r.piezas.forEach(p => { expect(p.supHa).toBeGreaterThan(0.29); expect(p.supHa).toBeLessThan(0.31) })
+  })
+  it('también corta con una línea quebrada', () => {
+    const r = cortarConLinea(restante, linea([[30, -10], [30, 30], [70, 30], [70, 70]]))
+    expect(r.piezas).toHaveLength(2)
+  })
+  it('la línea debe empezar y acabar fuera de la parcela', () => {
+    expect(cortarConLinea(restante, linea([[50, 30], [50, 70]])).error).toMatch(/fuera de la parcela/)
+    expect(cortarConLinea(restante, linea([[50, -10], [50, 30]])).error).toMatch(/fuera de la parcela/)
+  })
+  it('una línea que no cruza la parcela no la divide', () => {
+    expect(cortarConLinea(restante, linea([[200, -10], [200, 70]])).error).toMatch(/no ha dividido/)
+  })
+  it('los trozos son los sectores: el segundo es lo que queda tras el primero, sin huecos ni solapes', () => {
+    const { piezas } = cortarConLinea(restante, linea([[50, -10], [50, 70]]))
+    const oeste = piezas.find(p => p.mp[0][0].every(c => c[0] * 111320 <= 50.1))!
+    const resto = dominioPlantacion(parcela, { sectoresPrevios: [oeste.mp] })
+    expect(areaMPm2(resto.geometria.coordinates)).toBeGreaterThan(3000 * 0.99)
+    // el sector es el propio trozo de parcela: su dominio coincide con él (la plantación no cambia)
+    const dom = dominioPlantacion(parcela, { sector: oeste.mp })
+    expect(Math.abs(areaMPm2(dom.geometria.coordinates) - areaMPm2(oeste.mp))).toBeLessThan(1)
+    // con camino de 6 m, el segundo sector pierde esa franja
+    const conCamino = dominioPlantacion(parcela, { sector: resto.geometria.coordinates, sectoresPrevios: [oeste.mp], caminoAnterior: { geom: oeste.mp, ancho: 6 } })
+    expect(areaMPm2(conCamino.geometria.coordinates)).toBeGreaterThan((3000 - 360) * 0.98); expect(areaMPm2(conCamino.geometria.coordinates)).toBeLessThan((3000 - 360) * 1.02)
   })
 })
