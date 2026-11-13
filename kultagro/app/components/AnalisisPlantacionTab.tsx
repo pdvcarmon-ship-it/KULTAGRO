@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { analizarPlantacion, azimutLineas, nombreRumbo, validarParams, type ResultadoOrientacion } from '../lib/analisisPlantacion'
-import { dominioPlantacion, supHaAnillo, type Anillo, type Dominio } from '../lib/sectoresPlantacion'
+import { dominioPlantacion, cortarConLinea, supHaAnillo, type Anillo, type Dominio, type PiezaCorte } from '../lib/sectoresPlantacion'
 import BrujulaOrientacion from './BrujulaOrientacion'
 import { renderizarImagen, canvasABlob, type CapasImagen, type ConjuntoImagen, type BloqueTexto } from '../lib/exportImagen'
 
@@ -48,7 +48,7 @@ interface SectorTerminado {
   id: number
   nombre: string
   color: string
-  anillo: Anillo                       // contorno dibujado [lon, lat]
+  geom: number[][][][]                 // trozo de parcela que es el sector (MultiPolygon lon/lat)
   rumbo: number
   params: ParamsTexto
   resultado: ResultadoOrientacion
@@ -57,11 +57,16 @@ interface SectorTerminado {
   caminoSiguiente: number | null       // ancho del camino con el sector siguiente; null = no es camino
 }
 
-type Dibujo = { tipo: 'sector' | 'exclusion'; vertices: [number, number][] } // vértices [lat, lon]
+type Dibujo = { tipo: 'exclusion' | 'corte'; vertices: [number, number][] } // vértices [lat, lon]; 'corte' = línea con la que se recorta la parcela
 
 interface ConjuntoArboles { puntos: Float64Array; color: string; espaciadoM: number }
 
 const aLatLon = (a: Anillo): [number, number][] => a.map(([lo, la]) => [la, lo])
+// MultiPolygon lon/lat → formato de Leaflet (polígonos con huecos, [lat, lon])
+const mpALeaflet = (mp: number[][][][]): [number, number][][][] => mp.map(poly => poly.map(ring => ring.map(([lo, la]) => [la, lo] as [number, number])))
+// Anillos exteriores [lat, lon] de un MultiPolygon (para contornos y etiquetas en la imagen)
+const contornosLatLon = (mp: number[][][][]): [number, number][][] => mp.map(poly => poly[0].map(([lo, la]) => [la, lo] as [number, number]))
+const COLORES_PIEZA = ['#29b6f6', '#ffa726', '#ab47bc', '#66bb6a', '#ef5350', '#ffee58']
 const mpAAnillosLatLon = (mp: number[][][][] | null): [number, number][][] => (mp || []).map(poly => poly[0].map(([lo, la]) => [la, lo] as [number, number]))
 
 const num = (t: string): number => Number(String(t).replace(/\s/g, '').replace(',', '.'))
@@ -153,7 +158,8 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
   const [exclusiones, setExclusiones] = useState<Anillo[]>([])
   const [modoSectores, setModoSectores] = useState(false)
   const [sectores, setSectores] = useState<SectorTerminado[]>([])
-  const [anilloActivo, setAnilloActivo] = useState<Anillo | null>(null) // contorno del sector que se está diseñando
+  const [sectorActivo, setSectorActivo] = useState<number[][][][] | null>(null) // trozo de parcela del sector que se está diseñando
+  const [piezas, setPiezas] = useState<(PiezaCorte & { id: number })[] | null>(null) // trozos resultantes del último corte, a elegir
   const [dibujo, setDibujo] = useState<Dibujo | null>(null)
   const [terminando, setTerminando] = useState(false)               // diálogo de TERMINADA
   const [esCamino, setEsCamino] = useState(false)
@@ -229,7 +235,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
     setResultado(null)
     setMejorBusqueda(null)
     setError('')
-    setExclusiones([]); setModoSectores(false); setSectores([]); setAnilloActivo(null); setDibujo(null); setTerminando(false)
+    setExclusiones([]); setModoSectores(false); setSectores([]); setSectorActivo(null); setPiezas(null); setDibujo(null); setTerminando(false)
     if (!parcela?.geojson) return
     const capa = L.geoJSON(parcela.geojson, { interactive: false, style: { color: '#00e5ff', weight: 2.5, fillColor: '#00e5ff', fillOpacity: 0.06 } }).addTo(map)
     parcelaLayerRef.current = capa
@@ -246,13 +252,13 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
   // el camino con el anterior y las zonas de exclusión
   const dominioInfo = useMemo((): { dom: Dominio | null; err: string } => {
     if (!parcela?.geojson) return { dom: null, err: '' }
-    if (modoSectores && !anilloActivo) return { dom: null, err: '' }
+    if (modoSectores && !sectorActivo) return { dom: null, err: '' }
     try {
       const prev = sectores[sectores.length - 1]
       const dom = dominioPlantacion(parcela.geojson, {
-        sector: modoSectores ? (anilloActivo as Anillo) : undefined,
-        sectoresPrevios: modoSectores ? sectores.map(sc => sc.anillo) : [],
-        caminoAnterior: modoSectores && prev?.caminoSiguiente ? { anillo: prev.anillo, ancho: prev.caminoSiguiente } : undefined,
+        sector: modoSectores ? (sectorActivo as number[][][][]) : undefined,
+        sectoresPrevios: modoSectores ? sectores.map(sc => sc.geom) : [],
+        caminoAnterior: modoSectores && prev?.caminoSiguiente ? { geom: prev.geom, ancho: prev.caminoSiguiente } : undefined,
         exclusiones,
       })
       return { dom, err: dom.supHa <= 0 ? 'No queda superficie donde plantar: el sector o las zonas de exclusión no dejan espacio.' : '' }
@@ -260,8 +266,18 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
       return { dom: null, err: 'El contorno dibujado no es válido (se cruza consigo mismo). Bórralo y vuélvelo a dibujar.' }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parcela?.geojson, modoSectores, anilloActivo, sectores, exclusiones])
+  }, [parcela?.geojson, modoSectores, sectorActivo, sectores, exclusiones])
   const dominio = dominioInfo.dom && dominioInfo.dom.supHa > 0 ? dominioInfo.dom : null
+
+  // Lo que queda de la parcela sin repartir entre sectores (sobre esto se corta para el siguiente sector)
+  const restante = useMemo((): Dominio | null => {
+    if (!modoSectores || sectorActivo || !parcela?.geojson) return null
+    try {
+      const d = dominioPlantacion(parcela.geojson, { sectoresPrevios: sectores.map(sc => sc.geom) })
+      return d.supHa > 0.0001 ? d : null
+    } catch { return null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parcela?.geojson, modoSectores, sectorActivo, sectores])
 
   // Árboles, caminos, cabeceras y zonas dibujadas en el mapa
   useEffect(() => {
@@ -287,17 +303,30 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
         .bindTooltip(`Exclusión ${i + 1}`, { permanent: false }).addTo(zonasLayerRef.current)
     })
     // Contornos de los sectores (terminados y en curso)
-    sectores.forEach(sc => L.polygon(aLatLon(sc.anillo), { color: sc.color, weight: 3, fillOpacity: 0, interactive: false }).addTo(zonasLayerRef.current))
-    if (modoSectores && anilloActivo) L.polygon(aLatLon(anilloActivo), { color: colorActivo, weight: 3, dashArray: '8 5', fillOpacity: 0.04, interactive: false }).addTo(zonasLayerRef.current)
+    sectores.forEach(sc => L.polygon(mpALeaflet(sc.geom), { color: sc.color, weight: 3, fillOpacity: 0, interactive: false }).addTo(zonasLayerRef.current))
+    if (modoSectores && sectorActivo) L.polygon(mpALeaflet(sectorActivo), { color: colorActivo, weight: 3, dashArray: '8 5', fillOpacity: 0.04, interactive: false }).addTo(zonasLayerRef.current)
+    // Lo que queda por repartir (donde se dibuja el corte) y los trozos entre los que elegir
+    if (modoSectores && !sectorActivo && restante && !piezas) {
+      L.polygon(mpALeaflet(restante.geometria.coordinates), { color: '#ffffff', weight: 2, dashArray: '6 4', fillColor: '#ffffff', fillOpacity: 0.12, interactive: false }).addTo(zonasLayerRef.current)
+    }
+    if (modoSectores && !sectorActivo && piezas) {
+      piezas.forEach((pz, i) => {
+        const col = COLORES_PIEZA[i % COLORES_PIEZA.length]
+        L.polygon(mpALeaflet(pz.mp), { color: col, weight: 2, fillColor: col, fillOpacity: 0.4, interactive: true })
+          .bindTooltip(`Trozo ${i + 1} · ${pz.supHa.toFixed(2)} ha — púlsalo para elegirlo`, { sticky: true })
+          .on('click', () => { setSectorActivo(pz.mp); setError('') }) // se conservan los trozos para poder elegir otro
+          .addTo(zonasLayerRef.current)
+      })
+    }
     // Vista previa de lo que se está dibujando
     if (dibujo && dibujo.vertices.length) {
-      const col = dibujo.tipo === 'exclusion' ? '#e53935' : colorActivo
-      if (dibujo.vertices.length >= 3) L.polygon(dibujo.vertices, { color: col, weight: 2, dashArray: '4 4', fillOpacity: 0.1, interactive: false }).addTo(zonasLayerRef.current)
+      const col = dibujo.tipo === 'exclusion' ? '#e53935' : '#ffffff'
+      if (dibujo.tipo === 'exclusion' && dibujo.vertices.length >= 3) L.polygon(dibujo.vertices, { color: col, weight: 2, dashArray: '4 4', fillOpacity: 0.1, interactive: false }).addTo(zonasLayerRef.current)
       else L.polyline(dibujo.vertices, { color: col, weight: 2, interactive: false }).addTo(zonasLayerRef.current)
       dibujo.vertices.forEach(v => L.circleMarker(v, { radius: 4, color: '#000', weight: 1, fillColor: col, fillOpacity: 1, interactive: false }).addTo(zonasLayerRef.current))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resultado, sectores, exclusiones, dibujo, anilloActivo, modoSectores, dominio])
+  }, [resultado, sectores, exclusiones, dibujo, sectorActivo, modoSectores, dominio, restante, piezas])
 
   // Cursor en cruz y sin zoom por doble clic mientras se dibuja
   useEffect(() => {
@@ -348,14 +377,14 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
       `Cabeceras ${p.cabecera} m · laterales ${p.lateral} m${p.conCaminos ? ` · ${caminos} camino${caminos === 1 ? '' : 's'} de ${p.caminoAncho} m (línea máx. ${p.caminoMax} m)` : ''}`,
       ...(extra ? [extra] : []),
     ]
-    const varios = sectores.length + (modoSectores && anilloActivo && resultado ? 1 : 0) > 1
+    const varios = sectores.length + (modoSectores && sectorActivo && resultado ? 1 : 0) > 1
     sectores.forEach((sc, i) => {
       const ant = sectores[i - 1]
       conjuntos.push({
         etiqueta: sc.nombre, color: sc.color, puntos: sc.resultado.puntos,
         espaciadoM: Math.min(num(sc.params.distArboles) || 1, num(sc.params.distLineas) || 1),
         caminosGeo: sc.resultado.caminosGeo, cabecerasGeo: sc.resultado.cabecerasGeo,
-        caminoEntreSectoresGeo: mpAAnillosLatLon(sc.caminoPrevio), contorno: aLatLon(sc.anillo), rumbo: sc.rumbo,
+        caminoEntreSectoresGeo: mpAAnillosLatLon(sc.caminoPrevio), contornos: contornosLatLon(sc.geom), rumbo: sc.rumbo,
       })
       bloques.push({
         titulo: `${sc.nombre} · ${fmt(sc.supHa, 2)} ha`, color: sc.color,
@@ -363,7 +392,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
           ant?.caminoSiguiente ? `Camino con ${ant.nombre}: ${fmt(ant.caminoSiguiente, 1)} m de ancho` : undefined),
       })
     })
-    if (resultado && dominio && (!modoSectores || anilloActivo)) {
+    if (resultado && dominio && (!modoSectores || sectorActivo)) {
       const ant = sectores[sectores.length - 1]
       const p: ParamsTexto = { distArboles, distLineas, cabecera, lateral, conCaminos, caminoMax, caminoAncho }
       conjuntos.push({
@@ -371,7 +400,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
         puntos: resultado.puntos, espaciadoM: Math.min(num(distArboles) || 1, num(distLineas) || 1),
         caminosGeo: resultado.caminosGeo, cabecerasGeo: resultado.cabecerasGeo,
         caminoEntreSectoresGeo: mpAAnillosLatLon(dominio.camino),
-        contorno: modoSectores && anilloActivo ? aLatLon(anilloActivo) : undefined, rumbo,
+        contornos: modoSectores && sectorActivo ? contornosLatLon(sectorActivo) : undefined, rumbo,
       })
       bloques.push({
         titulo: `${modoSectores ? `Sector ${sectores.length + 1}` : 'Plantación'} · ${fmt(dominio.supHa, 2)} ha`,
@@ -426,7 +455,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
     if (!exportBlob || !parcela) return
     const a = document.createElement('a')
     a.href = URL.createObjectURL(exportBlob)
-    const nSect = sectores.length + (modoSectores && anilloActivo && resultado ? 1 : 0)
+    const nSect = sectores.length + (modoSectores && sectorActivo && resultado ? 1 : 0)
     a.download = `plantacion-${parcela.nombre.replace(/[^\w\-]+/g, '_')}-${nSect > 1 ? `${nSect}sectores` : `${rumbo}grados`}.png`
     document.body.appendChild(a); a.click(); a.remove()
     setTimeout(() => URL.revokeObjectURL(a.href), 2000)
@@ -435,43 +464,54 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
   // ---- Dibujo de zonas y sectores ----
   const empezarDibujo = (tipo: Dibujo['tipo']) => { setError(''); setDibujo({ tipo, vertices: [] }); if (isMobile) setPanelAbierto(false) }
   const quitarUltimoPunto = () => setDibujo(d => (d ? { ...d, vertices: d.vertices.slice(0, -1) } : d))
+  // Recorta lo que queda de la parcela con la línea dibujada y deja elegir uno de los trozos
+  const cortarRestante = (linea: [number, number][]) => {
+    if (!restante) return
+    const r = cortarConLinea(restante.geometria.coordinates, linea.map(([la, lo]) => [lo, la] as [number, number]))
+    if (r.error) { setError(r.error); return }
+    setError('')
+    setPiezas(r.piezas.map((p, i) => ({ ...p, id: i })))
+  }
   const cancelarDibujo = () => { setDibujo(null); if (isMobile) setPanelAbierto(true) }
   const cerrarDibujo = () => {
     const d = dibujoRef.current
     if (!d) return
     // un doble clic añade dos puntos iguales seguidos: se quitan
     const v = d.vertices.filter((p, i, a) => i === 0 || p[0] !== a[i - 1][0] || p[1] !== a[i - 1][1])
-    if (v.length < 3) { setError('Hacen falta al menos 3 puntos para cerrar la zona.'); return }
-    const anillo: Anillo = v.map(([la, lo]) => [lo, la])
-    if (d.tipo === 'exclusion') setExclusiones(prev => [...prev, anillo])
-    else setAnilloActivo(anillo)
+    if (d.tipo === 'exclusion') {
+      if (v.length < 3) { setError('Hacen falta al menos 3 puntos para cerrar la zona.'); return }
+      setExclusiones(prev => [...prev, v.map(([la, lo]) => [lo, la] as [number, number])])
+    } else {
+      if (v.length < 2) { setError('La línea de corte necesita al menos 2 puntos.'); return }
+      cortarRestante(v)
+    }
     setDibujo(null)
-    setError('')
     if (isMobile) setPanelAbierto(true)
   }
   cerrarDibujoRef.current = cerrarDibujo
 
-  const crearSectores = () => { setModoSectores(true); setAnilloActivo(null); setSectores([]); setError('') }
+  const crearSectores = () => { setModoSectores(true); setSectorActivo(null); setPiezas(null); setSectores([]); setError('') }
   const salirDeSectores = () => {
     if (sectores.length > 0 && !confirm('Se descartarán los sectores ya terminados. ¿Continuar?')) return
-    setModoSectores(false); setSectores([]); setAnilloActivo(null); setDibujo(null); setError('')
+    setModoSectores(false); setSectores([]); setSectorActivo(null); setPiezas(null); setDibujo(null); setError('')
   }
-  const deshacerUltimoSector = () => { setSectores(prev => prev.slice(0, -1)); setAnilloActivo(null) }
+  const deshacerUltimoSector = () => { setSectores(prev => prev.slice(0, -1)); setSectorActivo(null); setPiezas(null) }
   const abrirTerminar = () => { setEsCamino(false); setAnchoCamino(cabecera); setTerminando(true) }
   const confirmarTerminar = () => {
-    if (!resultado || !dominio || !anilloActivo) return
+    if (!resultado || !dominio || !sectorActivo) return
     let ancho: number | null = null
     if (esCamino) {
       ancho = num(anchoCamino)
       if (!(ancho > 0)) { setError('Indica el ancho del camino (mayor que 0).'); return }
     }
     const nuevo: SectorTerminado = {
-      id: Date.now(), nombre: `Sector ${sectores.length + 1}`, color: colorActivo, anillo: anilloActivo, rumbo,
+      id: Date.now(), nombre: `Sector ${sectores.length + 1}`, color: colorActivo, geom: sectorActivo, rumbo,
       params: { distArboles, distLineas, cabecera, lateral, conCaminos, caminoMax, caminoAncho },
       resultado, supHa: dominio.supHa, caminoPrevio: dominio.camino, caminoSiguiente: ancho,
     }
     setSectores(prev => [...prev, nuevo])
-    setAnilloActivo(null)
+    setSectorActivo(null)
+    setPiezas(null)
     setResultado(null)
     setTerminando(false)
     setError('')
@@ -556,7 +596,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginTop: 16 }}>🧩 Sectores</div>
             {!modoSectores ? (
               <>
-                <div style={ayudaStyle}>Divide la parcela en sectores para diseñar plantaciones distintas (marco, dirección…). Se hacen de uno en uno.</div>
+                <div style={ayudaStyle}>Divide la parcela en sectores para diseñar plantaciones distintas (marco, dirección…). Se recorta la parcela con una línea y se elige el trozo, de uno en uno, como en los sectores de riego.</div>
                 <button onClick={crearSectores} style={botonSec}>CREAR SECTORES</button>
               </>
             ) : (
@@ -568,19 +608,40 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
                     {sc.caminoSiguiente ? <><br />Camino con el siguiente: {fmt(sc.caminoSiguiente, 1)} m</> : null}
                   </div>
                 ))}
-                {!anilloActivo ? (
-                  <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, border: `2px dashed ${colorActivo}`, fontSize: 11, color: 'var(--text)' }}>
-                    <b>Sector {sectores.length + 1}</b>: dibuja su contorno en el mapa.
-                    <button onClick={() => empezarDibujo('sector')} disabled={!!dibujo} style={{ ...botonSec, opacity: dibujo ? 0.5 : 1 }}>✏️ DIBUJAR SECTOR {sectores.length + 1}</button>
-                  </div>
+                {!sectorActivo ? (
+                  restante ? (
+                    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, border: `2px dashed ${colorActivo}`, fontSize: 11, color: 'var(--text)', lineHeight: 1.5 }}>
+                      <b>Sector {sectores.length + 1}</b> · quedan {fmt(restante.supHa, 2)} ha de la parcela sin repartir.
+                      {piezas ? (
+                        <>
+                          <div style={ayudaStyle}>Elige el trozo que será este sector, en el mapa o aquí:</div>
+                          {piezas.map((pz, i) => (
+                            <button key={pz.id} onClick={() => { setSectorActivo(pz.mp); setError('') }}
+                              style={{ ...botonSec, borderColor: COLORES_PIEZA[i % COLORES_PIEZA.length], color: 'var(--text)' }}>
+                              Trozo {i + 1} · {fmt(pz.supHa, 2)} ha
+                            </button>
+                          ))}
+                          <button onClick={() => setPiezas(null)} style={botonPeligro}>CANCELAR EL CORTE</button>
+                        </>
+                      ) : (
+                        <>
+                          <div style={ayudaStyle}>Corta la parcela con una línea que la cruce (empieza y acaba fuera de ella) y elige el trozo. Si es el último, usa todo lo que queda.</div>
+                          <button onClick={() => empezarDibujo('corte')} disabled={!!dibujo} style={{ ...botonSec, opacity: dibujo ? 0.5 : 1 }}>✂️ CORTAR LA PARCELA</button>
+                          <button onClick={() => { setSectorActivo(restante.geometria.coordinates); setError('') }} style={botonSec}>USAR TODO LO QUE QUEDA ({fmt(restante.supHa, 2)} ha)</button>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text)' }}>Ya está repartida toda la parcela. Puedes exportar la imagen.</div>
+                  )
                 ) : (
                   <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text)' }}>
-                    Diseñando el <b>Sector {sectores.length + 1}</b>. Ajusta los datos de abajo y pulsa TERMINADA.
-                    <button onClick={() => { setAnilloActivo(null); setResultado(null) }} style={botonSec}>↺ REDIBUJAR EL CONTORNO</button>
+                    Diseñando el <b>Sector {sectores.length + 1}</b> ({fmt(dominioInfo.dom?.supHa || 0, 2)} ha plantables). Ajusta los datos de abajo y pulsa TERMINADA.
+                    <button onClick={() => { setSectorActivo(null); setResultado(null) }} style={botonSec}>↺ ELEGIR OTRO TROZO</button>
                   </div>
                 )}
                 {sectores.length > 0 && <button onClick={deshacerUltimoSector} style={botonSec}>↩ DESHACER EL ÚLTIMO SECTOR</button>}
-                {sectores.length > 0 && !anilloActivo && (
+                {sectores.length > 0 && !sectorActivo && !piezas && (
                   <button onClick={() => setExportAbierto(true)} style={{ ...botonSec, background: 'var(--green)', color: '#fff' }}>📷 EXPORTAR IMAGEN</button>
                 )}
                 <button onClick={salirDeSectores} style={botonPeligro}>SALIR DE LOS SECTORES</button>
@@ -589,7 +650,7 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
           </div>
         )}
 
-        {parcela && (!modoSectores || anilloActivo) && !dibujo && (
+        {parcela && (!modoSectores || sectorActivo) && !dibujo && (
         <>
         <div style={{ marginTop: 14 }}>
           <label style={labelStyle}>2 · Espacio alrededor (m)</label>
@@ -695,10 +756,10 @@ export default function AnalisisPlantacionTab({ fincas, parcelas, isMobile }: Pr
         {dibujo && (
           <div role="toolbar" aria-label="Dibujo de zona" style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1200, background: 'rgba(255,255,255,0.95)', color: '#111', borderRadius: 10, padding: '8px 10px', boxShadow: '0 2px 10px rgba(0,0,0,0.4)', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', maxWidth: '92%' }}>
             <div style={{ fontSize: 11, fontFamily: 'var(--mono)', textAlign: 'center' }}>
-              {dibujo.tipo === 'exclusion' ? '🚫 Zona de exclusión' : `✏️ Sector ${sectores.length + 1}`} · clic = punto · doble clic = cerrar · {dibujo.vertices.length} punto{dibujo.vertices.length === 1 ? '' : 's'}
+              {dibujo.tipo === 'exclusion' ? '🚫 Zona de exclusión' : `✂️ Línea de corte (sector ${sectores.length + 1})`} · clic = punto · doble clic = {dibujo.tipo === 'exclusion' ? 'cerrar' : 'cortar'} · {dibujo.vertices.length} punto{dibujo.vertices.length === 1 ? '' : 's'}
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button onClick={cerrarDibujo} disabled={dibujo.vertices.length < 3} style={{ padding: '6px 10px', borderRadius: 6, border: 'none', background: '#2e7d32', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer', opacity: dibujo.vertices.length < 3 ? 0.5 : 1 }}>✔ CERRAR</button>
+              <button onClick={cerrarDibujo} disabled={dibujo.vertices.length < (dibujo.tipo === 'exclusion' ? 3 : 2)} style={{ padding: '6px 10px', borderRadius: 6, border: 'none', background: '#2e7d32', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer', opacity: dibujo.vertices.length < (dibujo.tipo === 'exclusion' ? 3 : 2) ? 0.5 : 1 }}>{dibujo.tipo === 'exclusion' ? '✔ CERRAR' : '✂️ CORTAR'}</button>
               <button onClick={quitarUltimoPunto} disabled={!dibujo.vertices.length} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #555', background: '#fff', color: '#111', fontSize: 11, cursor: 'pointer', opacity: dibujo.vertices.length ? 1 : 0.5 }}>↩ Quitar punto</button>
               <button onClick={cancelarDibujo} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #b3261e', background: '#fff', color: '#b3261e', fontSize: 11, cursor: 'pointer' }}>Cancelar</button>
             </div>
