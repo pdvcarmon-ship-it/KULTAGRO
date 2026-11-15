@@ -25,6 +25,7 @@
 // asignadas" (checkbox normal, dentro del checklist de Parcelas).
 
 import { useState, useMemo } from 'react'
+import { generarCodigo, hashCodigo, caducidadCodigo, formatearCodigo, DIAS_VALIDEZ_CODIGO } from '../lib/codigoActivacion'
 import { supabase } from '../lib/supabaseClient'
 import { CATALOGO_PERMISOS, PLANTILLAS_ROL, ROLES_PREDEFINIDOS, PermisoClave, RolPredefinido } from '../lib/permisos'
 import { moduloVisible } from '../lib/accesoPestanas'
@@ -71,6 +72,8 @@ export default function PermisosTab({ session, personal, setPersonal, isMobile, 
   const [guardando, setGuardando] = useState(false)
   const [error, setError] = useState('')
   const [guardadoOk, setGuardadoOk] = useState(false)
+  // Código de activación recién generado: solo se ve en este momento (en base de datos solo queda su hash).
+  const [codigoGenerado, setCodigoGenerado] = useState<{ personaId: string; nombre: string; codigo: string } | null>(null)
 
   const trabajadores = useMemo(() => personal.filter(p => p.activo !== false), [personal])
   const seleccionado = trabajadores.find(p => p.id === seleccionadoId) || null
@@ -122,13 +125,23 @@ export default function PermisosTab({ session, personal, setPersonal, isMobile, 
       setError('Este trabajador no tiene DNI registrado — hace falta para el primer acceso.')
       return
     }
-    if (!confirm(`Se habilita el acceso a la app para ${seleccionado.nombre}. La próxima vez que entre a KULTAGRO podrá crear su contraseña con el email de la empresa y su DNI (${seleccionado.dni}). ¿Continuar?`)) return
+    const aviso = seleccionado.estadoAcceso === 'pendiente'
+      ? `Se generará un código de activación NUEVO para ${seleccionado.nombre} y el anterior dejará de valer. ¿Continuar?`
+      : `Se habilita el acceso a la app para ${seleccionado.nombre}. Para entrar por primera vez necesitará el email de la empresa, su DNI (${seleccionado.dni}) y un código de activación que se mostrará a continuación. ¿Continuar?`
+    if (!confirm(aviso)) return
 
     setGuardando(true); setError('')
     try {
-      const { error: err } = await supabase.from('personal').update({ estado_acceso: 'pendiente' }).eq('id', seleccionado.id)
-      if (err) { setError('No se pudo habilitar el acceso: ' + err.message); return }
+      // El código solo se ve ahora; en base de datos se guarda su hash y su caducidad (un solo uso).
+      const codigo = generarCodigo()
+      const { error: err } = await supabase.from('personal').update({
+        estado_acceso: 'pendiente',
+        codigo_activacion_hash: await hashCodigo(codigo),
+        codigo_activacion_caduca: caducidadCodigo().toISOString(),
+      }).eq('id', seleccionado.id)
+      if (err) { setError('No se pudo habilitar el acceso: ' + err.message + ' (¿has ejecutado sql/12_seguridad_acceso.sql?)'); return }
       setPersonal(prev => prev.map(p => p.id === seleccionado.id ? { ...p, estadoAcceso: 'pendiente' } : p))
+      setCodigoGenerado({ personaId: seleccionado.id, nombre: seleccionado.nombre, codigo })
     } catch (e: any) {
       setError('No se pudo habilitar el acceso: ' + (e.message || 'error desconocido'))
     } finally {
@@ -217,12 +230,34 @@ export default function PermisosTab({ session, personal, setPersonal, isMobile, 
                   </>
                 )}
                 {seleccionado.estadoAcceso === 'pendiente' && (
-                  <span style={{ fontSize: 11, color: '#ffb84d', fontFamily: 'var(--mono)' }}>⏳ Pendiente de primer acceso (aún no ha entrado)</span>
+                  <>
+                    <span style={{ fontSize: 11, color: '#ffb84d', fontFamily: 'var(--mono)' }}>⏳ Pendiente de primer acceso (aún no ha entrado)</span>
+                    <button onClick={habilitarAcceso} disabled={guardando}
+                      style={{ marginLeft: 'auto', padding: '6px 12px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer' }}>
+                      Generar nuevo código
+                    </button>
+                  </>
                 )}
                 {seleccionado.estadoAcceso === 'activo' && (
                   <span style={{ fontSize: 11, color: 'var(--green)', fontFamily: 'var(--mono)' }}>✓ Acceso activo</span>
                 )}
               </div>
+
+              {codigoGenerado && codigoGenerado.personaId === seleccionado.id && (
+                <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 8, background: 'rgba(31, 74, 40, 0.08)', border: '1px solid var(--green)' }}>
+                  <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text)', marginBottom: 6 }}>
+                    Código de activación de {codigoGenerado.nombre} (válido {DIAS_VALIDEZ_CODIGO} días, un solo uso):
+                  </div>
+                  <div style={{ fontSize: 20, fontFamily: 'var(--mono)', fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text)', userSelect: 'all' }}>{formatearCodigo(codigoGenerado.codigo)}</div>
+                  <div style={{ fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginTop: 6 }}>
+                    Entrégaselo en persona o por un canal privado. Solo se muestra ahora: si lo pierdes, genera uno nuevo. El trabajador lo escribe en «Acceso de trabajador», junto al email de la empresa, su DNI y la contraseña que elija.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button onClick={() => navigator.clipboard?.writeText(formatearCodigo(codigoGenerado.codigo))} style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer' }}>Copiar</button>
+                    <button onClick={() => setCodigoGenerado(null)} style={{ padding: '5px 10px', borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, cursor: 'pointer' }}>Ocultar</button>
+                  </div>
+                </div>
+              )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
                 {MODULOS.filter(m => moduloVisible(m.modulo, pestanasDeshabilitadas)).map(({ modulo, permisos }) => (

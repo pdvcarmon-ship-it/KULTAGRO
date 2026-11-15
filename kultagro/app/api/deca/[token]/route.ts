@@ -13,15 +13,25 @@
 import { NextRequest } from 'next/server'
 import { supabaseAdmin } from '../../../lib/supabaseAdmin'
 import { TOKEN_REGEX, enlaceVigente, nombreArchivoDeca } from '../../../lib/deca'
+import { limitar, ipDe } from '../../../lib/rateLimit'
 
 export const dynamic = 'force-dynamic'
 
+// El documento es público por diseño (lo abre cualquiera con el QR), así que se permite leerlo desde cualquier
+// origen: la app lo usa para comprobar, tras crear un DeCA, que el enlace de verdad se abre sin login.
+const CORS = { 'Access-Control-Allow-Origin': '*' }
+
 const respuestaTexto = (mensaje: string, status: number) =>
-  new Response(mensaje, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } })
+  new Response(mensaje, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', ...CORS } })
+
+// Generoso a propósito: un inspector, el conductor y las dos partes pueden abrirlo varias veces seguidas.
+const MAX_POR_IP = 60   // peticiones por IP cada minuto
 
 export async function GET(_req: NextRequest, { params }: { params: { token: string } }) {
   const token = params.token
   if (!TOKEN_REGEX.test(token)) return respuestaTexto('Documento no encontrado.', 404)
+
+  if (!(await limitar(`deca:ip:${ipDe(_req)}`, MAX_POR_IP, 60))) return respuestaTexto('Demasiadas peticiones. Inténtalo de nuevo en un minuto.', 429)
 
   const { data: fila, error } = await supabaseAdmin
     .from('decas')
@@ -58,6 +68,7 @@ export async function GET(_req: NextRequest, { params }: { params: { token: stri
       'Content-Length': String(bytes.byteLength),
       'Cache-Control': 'private, no-store',
       'X-Robots-Tag': 'noindex',
+      ...CORS,
     },
   })
 }

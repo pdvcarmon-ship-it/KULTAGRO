@@ -5,10 +5,12 @@ const pdfFalso = () => ({ arrayBuffer: async () => new Uint8Array([37, 80, 68, 7
 
 const fila = { pdf_path: 'u1/d1.pdf', fecha_fin_servicio: '2999-01-01', datos: { fechaTransporte: '2999-01-01', matriculaVehiculo: 'E1234BBB' } }
 let respuestaFila: any = { data: fila, error: null }
+let permitir = true
 let respuestaDescarga: any = { data: pdfFalso(), error: null }
 
 vi.mock('../../../lib/supabaseAdmin', () => ({
   supabaseAdmin: {
+    rpc: async () => ({ data: permitir, error: null }),
     from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => respuestaFila }) }) }),
     storage: { from: () => ({ download: async () => respuestaDescarga }) },
   },
@@ -17,9 +19,10 @@ vi.mock('../../../lib/supabaseAdmin', () => ({
 import { GET } from './route'
 
 const TOKEN = 'A'.repeat(43)
-const llamar = (token: string) => GET({} as any, { params: { token } })
+const llamar = (token: string) => GET({ headers: { get: () => '1.2.3.4' } } as any, { params: { token } })
 
 beforeEach(() => {
+  permitir = true
   respuestaFila = { data: { ...fila }, error: null }
   respuestaDescarga = { data: pdfFalso(), error: null }
 })
@@ -45,6 +48,13 @@ describe('GET /api/deca/[token]', () => {
   it('410 pasados 7 días desde el fin del servicio', async () => {
     respuestaFila = { data: { ...fila, fecha_fin_servicio: '2020-01-01' }, error: null }
     expect((await llamar(TOKEN)).status).toBe(410)
+  })
+  it('429 si una IP abusa', async () => {
+    permitir = false
+    expect((await llamar(TOKEN)).status).toBe(429)
+  })
+  it('permite leerlo desde cualquier origen (la app comprueba el enlace)', async () => {
+    expect((await llamar(TOKEN)).headers.get('Access-Control-Allow-Origin')).toBe('*')
   })
   it('500 si falla la descarga del almacenamiento', async () => {
     respuestaDescarga = { data: null, error: { message: 'x' } }

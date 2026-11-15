@@ -63,6 +63,9 @@ interface FilaDeca {
 
 interface Resultado { url: string; bytes: Uint8Array; nombre: string; qr: string; creadoEn: Date }
 
+// 'comprobando' mientras se verifica; 'ok' = se descarga el PDF sin login; 'fallo' = el enlace NO es público.
+type EstadoEnlace = 'comprobando' | 'ok' | 'fallo'
+
 const lbl: CSSProperties = { display: 'block', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase' }
 const inp: CSSProperties = { width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '9px 12px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--sans)', outline: 'none' }
 const seccion: CSSProperties = { fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--green)', textShadow: 'var(--green-outline)', letterSpacing: '0.06em', fontWeight: 700, marginTop: 4 }
@@ -72,6 +75,17 @@ const botonPrim: CSSProperties = { padding: '8px 12px', borderRadius: 6, backgro
 
 const baseUrl = (): string => (process.env.NEXT_PUBLIC_APP_URL || window.location.origin).replace(/\/+$/, '')
 const esLocal = (u: string) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(u)
+
+// Abre el enlace del QR como lo haría un inspector: sin cookies ni sesión. Si la protección de despliegues de
+// Vercel (u otra cosa) lo bloquea, la respuesta no es un PDF o la petición falla, y se avisa antes de entregarlo.
+const comprobarEnlacePublico = async (url: string): Promise<EstadoEnlace> => {
+  try {
+    const r = await fetch(url, { credentials: 'omit', cache: 'no-store' })
+    return r.ok && (r.headers.get('content-type') || '').includes('application/pdf') ? 'ok' : 'fallo'
+  } catch {
+    return 'fallo'
+  }
+}
 
 const mensajeError = (e: any): string => {
   const txt = String(e?.message || e || '')
@@ -124,6 +138,7 @@ export default function DecaModal({ session, isMobile, cargadores, fincas, parce
   const [cargandoHist, setCargandoHist] = useState(true)
   const [avisoHist, setAvisoHist] = useState('')
   const [copiado, setCopiado] = useState(false)
+  const [estadoEnlace, setEstadoEnlace] = useState<EstadoEnlace>('comprobando')
   const [origenFincaId, setOrigenFincaId] = useState(fincaIdInicial || '')
   const [origenParcelaId, setOrigenParcelaId] = useState('')
 
@@ -236,7 +251,9 @@ export default function DecaModal({ session, isMobile, cargadores, fincas, parce
       if (errUpd) throw errUpd
 
       setResultado({ url, bytes, nombre: nombreArchivoDeca(d), qr: await qrComoDataUrl(url, 240), creadoEn })
+      setEstadoEnlace('comprobando')
       setVista('resultado')
+      comprobarEnlacePublico(url).then(setEstadoEnlace)
       cargarHistorial()
     } catch (e) {
       console.error('Error creando el DeCA:', e)
@@ -430,6 +447,9 @@ export default function DecaModal({ session, isMobile, cargadores, fincas, parce
               <textarea value={datos.observaciones} onChange={e => set('observaciones', e.target.value)} rows={2} placeholder="Solo si las partes lo piden (opcional)..." style={{ ...inp, resize: 'vertical' }} />
             </div>
 
+            {typeof window !== 'undefined' && /\.vercel\.app$/i.test(new URL(baseUrl()).hostname) && (
+              <div style={{ ...nota, color: '#6E2417' }}>Estás usando una dirección vercel.app. La dirección del QR queda grabada en cada PDF durante el año de conservación: si cambia, esos QR dejan de funcionar. Para que dure, configura NEXT_PUBLIC_APP_URL con un dominio propio y estable.</div>
+            )}
             <div style={nota}>El DeCA debe crearse antes de iniciar el servicio y entregarse al conductor (en el móvil o impreso, siempre con el QR). Una vez creado no se puede borrar: debe conservarse al menos un año. Para corregir datos, crea uno nuevo desde «Generados → Duplicar».</div>
 
             {errores.length > 0 && (
@@ -452,6 +472,13 @@ export default function DecaModal({ session, isMobile, cargadores, fincas, parce
             <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>✅ DeCA creado el {formatFechaHoraMadrid(resultado.creadoEn)}</div>
             <img src={resultado.qr} alt="Código QR del DeCA" width={200} height={200} style={{ background: '#fff', padding: 6, borderRadius: 6 }} />
             <div style={{ ...nota, wordBreak: 'break-all', maxWidth: '100%' }}>{resultado.url}</div>
+            {estadoEnlace === 'comprobando' && <div style={nota}>Comprobando que el enlace se abre sin iniciar sesión…</div>}
+            {estadoEnlace === 'ok' && <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--green)' }}>✓ Enlace comprobado: se descarga el PDF directamente, sin login.</div>}
+            {estadoEnlace === 'fallo' && (
+              <div style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 8, background: 'rgba(110, 36, 23, 0.08)', border: '1px solid rgba(110, 36, 23, 0.3)', color: '#6E2417', fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.45 }}>
+                ⚠ El enlace del QR NO se abre libremente. No entregues este DeCA: un inspector no podría verlo. Lo más probable es que la protección de despliegues de Vercel esté bloqueando esta dirección (Settings → Deployment Protection) o que NEXT_PUBLIC_APP_URL no apunte al dominio de producción. Corrígelo y crea un DeCA nuevo.
+              </div>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
               <button onClick={() => abrirBlob(blobResultado(resultado))} style={botonPrim}>Abrir PDF</button>
               <button onClick={() => guardarBlob(blobResultado(resultado), resultado.nombre)} style={botonSec}>Descargar</button>

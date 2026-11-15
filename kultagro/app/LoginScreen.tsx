@@ -12,6 +12,7 @@ export default function LoginScreen({ onLogin }: Props) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [dni, setDni] = useState('')
+  const [codigo, setCodigo] = useState('')   // código de activación (solo el primer acceso de un trabajador)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
   const [cargando, setCargando] = useState(false)
@@ -50,7 +51,7 @@ export default function LoginScreen({ onLogin }: Props) {
         const resp = await fetch('/api/acceso-trabajador', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ emailEmpresa: email.trim(), dni: dni.trim(), password }),
+          body: JSON.stringify({ emailEmpresa: email.trim(), dni: dni.trim(), password, codigo: codigo.trim() }),
         })
         const datos = await resp.json()
         if (!resp.ok) throw new Error(datos.error || 'No se pudo acceder')
@@ -61,7 +62,7 @@ export default function LoginScreen({ onLogin }: Props) {
       }
     } catch (e: any) {
       const msg = e.message || 'Error desconocido'
-      if (msg.includes('Invalid login credentials')) setError('Email/DNI o contraseña incorrectos')
+      if (msg.includes('Invalid login credentials')) setError(modo === 'trabajador' ? 'Datos incorrectos. Comprueba el email de la empresa, tu DNI y la contraseña. Si es tu primer acceso, revisa también el código de activación (caduca a los 7 días: pide uno nuevo a tu empresa).' : 'Email o contraseña incorrectos')
       else if (msg.includes('User already registered')) setError('Ya existe una cuenta con ese email')
       else setError(msg)
     } finally {
@@ -70,7 +71,7 @@ export default function LoginScreen({ onLogin }: Props) {
   }
 
   const cambiarModo = (nuevo: 'login' | 'trabajador') => {
-    setModo(nuevo); setError(''); setInfo(''); setDni('')
+    setModo(nuevo); setError(''); setInfo(''); setDni(''); setCodigo('')
   }
 
   const inputStyle: React.CSSProperties = { width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 12px', color: 'var(--text)', fontSize: 14, fontFamily: 'var(--sans)', outline: 'none' }
@@ -116,6 +117,24 @@ export default function LoginScreen({ onLogin }: Props) {
                 autoComplete="off"
                 style={inputStyle}
               />
+            </div>
+          )}
+
+          {modo === 'trabajador' && (
+            <div>
+              <label style={labelStyle}>Código de activación</label>
+              <input
+                type="text"
+                value={codigo}
+                onChange={e => setCodigo(e.target.value)}
+                placeholder="XXXX-XXXX-XXXX"
+                autoComplete="off"
+                autoCapitalize="characters"
+                style={inputStyle}
+              />
+              <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)', marginTop: 5 }}>
+                Solo la primera vez: te lo da tu empresa. Después no hace falta.
+              </div>
             </div>
           )}
 
