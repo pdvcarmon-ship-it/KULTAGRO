@@ -27,6 +27,7 @@
 import { useState, useMemo } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { CATALOGO_PERMISOS, PLANTILLAS_ROL, ROLES_PREDEFINIDOS, PermisoClave, RolPredefinido } from '../lib/permisos'
+import { moduloVisible } from '../lib/accesoPestanas'
 import type { Session } from '@supabase/supabase-js'
 
 // Tipo mínimo, estructuralmente compatible con `Personal` de page.tsx.
@@ -45,6 +46,7 @@ interface Props {
   personal: PersonalMinimo[]
   setPersonal: React.Dispatch<React.SetStateAction<any[]>>
   isMobile: boolean
+  pestanasDeshabilitadas?: string[]   // pestañas que GES ha bloqueado a la cuenta: sus módulos no se listan
 }
 
 const ETIQUETA_ROL: Record<string, string> = {
@@ -62,7 +64,7 @@ const MODULOS = (() => {
   return orden.map(m => ({ modulo: m, permisos: porModulo[m] }))
 })()
 
-export default function PermisosTab({ session, personal, setPersonal, isMobile }: Props) {
+export default function PermisosTab({ session, personal, setPersonal, isMobile, pestanasDeshabilitadas = [] }: Props) {
   const [seleccionadoId, setSeleccionadoId] = useState<string | null>(null)
   const [rolLocal, setRolLocal] = useState<string>('')
   const [permisosLocal, setPermisosLocal] = useState<Record<string, boolean>>({})
@@ -223,7 +225,7 @@ export default function PermisosTab({ session, personal, setPersonal, isMobile }
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
-                {MODULOS.map(({ modulo, permisos }) => (
+                {MODULOS.filter(m => moduloVisible(m.modulo, pestanasDeshabilitadas)).map(({ modulo, permisos }) => (
                   <div key={modulo}>
                     <div style={{ fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, color: 'var(--blue)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
                       {modulo}
