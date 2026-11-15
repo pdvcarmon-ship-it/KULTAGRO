@@ -31,6 +31,7 @@ export type PermisoClave =
   | 'maquinaria.ver' | 'maquinaria.crear_editar' | 'maquinaria.eliminar'
   | 'cosechas.ver' | 'cosechas.crear_editar_eliminar'
   | 'cosechas.comercializacion.ver' | 'cosechas.comercializacion.crear_editar_eliminar'
+  | 'cosechas.deca.crear'
   | 'personal.ver' | 'personal.crear_editar' | 'personal.descargar_excel'
   | 'permisos.gestionar'
   | 'tareas.ver_todas' | 'tareas.crear_asignar'
@@ -73,6 +74,7 @@ export const CATALOGO_PERMISOS: PermisoDescriptor[] = [
   { clave: 'cosechas.crear_editar_eliminar', modulo: 'Cosechas', etiqueta: 'Crear / editar / eliminar cosechas' },
   { clave: 'cosechas.comercializacion.ver', modulo: 'Cosechas', etiqueta: 'Ver comercialización' },
   { clave: 'cosechas.comercializacion.crear_editar_eliminar', modulo: 'Cosechas', etiqueta: 'Crear / editar / eliminar comercialización' },
+  { clave: 'cosechas.deca.crear', modulo: 'Cosechas', etiqueta: 'Crear y consultar DeCA (documento de control del transporte)' },
 
   { clave: 'personal.ver', modulo: 'Personal', etiqueta: 'Ver personal' },
   { clave: 'personal.crear_editar', modulo: 'Personal', etiqueta: 'Crear / editar personal' },

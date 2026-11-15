@@ -27,6 +27,7 @@ import {
   extraerMateriasActivas, materiasActivasTexto, superficieTratadaHa, repartirSuperficieEntreRecintos,
   calcularPlazoSiex, estaPendienteDeEnvio, type PlazoSiex,
 } from './lib/siex'
+import { UNIDADES_DECA, type DatosDeca } from './lib/deca'
 const ImportarParcelasExcel = dynamic(() => import('./components/ImportarParcelasExcel'), { ssr: false })
 const VincularSiexTab = dynamic(() => import('./components/VincularSiexTab'), { ssr: false })
 const RiegoTab = dynamic(() => import('./components/RiegoTab'), { ssr: false })
@@ -37,6 +38,7 @@ const DonutChart = dynamic(() => import('./components/DonutChart'), { ssr: false
 const MapView = dynamic(() => import('./components/MapView'), { ssr: false })
 const UbicacionMapModal = dynamic(() => import('./components/UbicacionMapModal'), { ssr: false })
 const PermisosTab = dynamic(() => import('./components/PermisosTab'), { ssr: false })
+const DecaModal = dynamic(() => import('./components/DecaModal'), { ssr: false })
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
 
@@ -1149,6 +1151,8 @@ export default function Home() {
   // derivan de la parcela elegida para esa campaña (actual o histórico).
   const [cosFormVisible, setCosFormVisible] = useState(false)
   const [cosEditar, setCosEditar] = useState<Cosecha | null>(null)
+  // Modal "Crear DeCA" (documento de control del transporte): null = cerrado; `inicial` = datos precargados.
+  const [decaAbierto, setDecaAbierto] = useState<{ inicial: Partial<DatosDeca>; fincaId?: string } | null>(null)
   const [cosCampanaId, setCosCampanaId] = useState('')
   const [cosFincaId, setCosFincaId] = useState('')
   const [cosParcelaId, setCosParcelaId] = useState('')
@@ -4735,6 +4739,51 @@ export default function Home() {
     if (!campanaId || !p.campanaId || p.campanaId === campanaId) return actual
     const hist = historicoCultivos.find(h => h.parcelaId === p.id && h.campanaId === campanaId)
     return hist ? { cultivo: hist.cultivo, variedad: hist.variedad, cultivoCodigo: hist.cultivoCodigo, variedadCodigo: hist.variedadCodigo } : actual
+  }
+
+  // --- DeCA (Documento de Control Administrativo del transporte) ---
+  // Datos del cargador contractual a partir de los datos de la explotación guardados por finca.
+  const cargadoresParaDeca = () =>
+    fincas
+      .filter(f => datosExplotacionPorFinca[f.id])
+      .map(f => {
+        const de = datosExplotacionPorFinca[f.id]
+        const localidad = [de.cPostal, de.localidad].filter(Boolean).join(' ')
+        return {
+          fincaId: f.id,
+          etiqueta: f.nombre,
+          nombre: de.nombreRazonSocial || de.titularNombre || '',
+          nif: de.nif || de.titularNif || f.nif || '',
+          domicilio: [de.direccion || de.titularDireccion, localidad, de.provincia].filter(Boolean).join(', '),
+        }
+      })
+
+  // Parcelas para el desplegable de origen: referencia SIGPAC y «cultivo (variedad)».
+  const parcelasParaDeca = () =>
+    misParcelas
+      .filter(p => p.fincaId)
+      .map(p => ({ id: p.id, fincaId: p.fincaId as string, nombre: p.nombre, sigpac: referenciaSigpacDeParcela(p), cultivo: formatCultivoVariedad(p.cultivo, p.variedad) }))
+
+  const abrirDecaVacio = () => setDecaAbierto({ inicial: {} })
+
+  // Desde una cosecha: precarga origen, naturaleza y peso (lo pendiente de comercializar, o lo cosechado).
+  const abrirDecaDesdeParte = (parte: { entradas: Cosecha[]; cultivo: string; variedad?: string; unidad: string; finca?: Finca; cantidadConocida: number; pendienteTotal: number; comercializadoTotal: number }) => {
+    const cantidad = parte.cantidadConocida > 0 ? (parte.comercializadoTotal > 0 && parte.pendienteTotal > 0 ? parte.pendienteTotal : parte.cantidadConocida) : 0
+    const unidadValida = (UNIDADES_DECA as readonly string[]).includes(parte.unidad) ? parte.unidad : 'kg'
+    // Si todas las entradas son de una misma parcela, el origen sale como «FINCA (SIGPAC)»; si no, solo la finca
+    // y se elige la parcela en el desplegable.
+    const idsParcela = Array.from(new Set(parte.entradas.map(e => e.parcelaId)))
+    const unica = idsParcela.length === 1 ? misParcelas.find(p => p.id === idsParcela[0]) : undefined
+    const sigpac = unica ? referenciaSigpacDeParcela(unica) : ''
+    setDecaAbierto({
+      fincaId: parte.finca?.id,
+      inicial: {
+        origen: parte.finca ? (sigpac && sigpac !== '—' ? `${parte.finca.nombre} (${sigpac})` : parte.finca.nombre) : '',
+        naturaleza: formatCultivoVariedad(parte.cultivo, parte.variedad),
+        cantidad: cantidad > 0 ? String(cantidad) : '',
+        unidad: unidadValida,
+      },
+    })
   }
 
   const abrirNuevaCosecha = (p?: ParcelaGuardada) => {
@@ -9092,9 +9141,14 @@ export default function Home() {
                   <div style={{ fontFamily: 'var(--mono)', fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>🌾 Cosecha comercializada</div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>{cosechas.length} cosecha{cosechas.length !== 1 ? 's' : ''} registrada{cosechas.length !== 1 ? 's' : ''}</div>
                 </div>
-                {misPermisos['cosechas.crear_editar_eliminar'] && (
-                  <button onClick={() => abrirNuevaCosecha()} style={{ padding: '7px 14px', borderRadius: 6, background: 'rgba(31, 74, 40, 1)', border: '1px solid var(--green)', color: 'var(--bg)', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>+ NUEVA COSECHA</button>
-                )}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {misPermisos['cosechas.deca.crear'] && (
+                    <button onClick={abrirDecaVacio} style={{ padding: '7px 14px', borderRadius: 6, background: 'transparent', border: '1px solid var(--green)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>🚛 CREAR DeCA</button>
+                  )}
+                  {misPermisos['cosechas.crear_editar_eliminar'] && (
+                    <button onClick={() => abrirNuevaCosecha()} style={{ padding: '7px 14px', borderRadius: 6, background: 'rgba(31, 74, 40, 1)', border: '1px solid var(--green)', color: 'var(--bg)', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>+ NUEVA COSECHA</button>
+                  )}
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -9235,6 +9289,9 @@ export default function Home() {
                               <button onClick={() => abrirNuevaComercializacionParte(parte.key)} style={{ padding: '6px 10px', borderRadius: 5, background: 'transparent', border: '1px solid var(--blue)', color: 'var(--bg)', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Comercialización</button>
                             ) : null}
                             </>)}
+                            {misPermisos['cosechas.deca.crear'] && (
+                              <button onClick={() => abrirDecaDesdeParte(parte)} style={{ marginTop: 8, padding: '6px 10px', borderRadius: 5, background: 'transparent', border: '1px solid var(--green)', color: 'var(--text)', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🚛 Crear DeCA con esta cosecha</button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -9252,6 +9309,19 @@ export default function Home() {
 
         {pestana === 'permisos' && (
           <PermisosTab session={session} personal={personal} setPersonal={setPersonal} isMobile={isMobile} pestanasDeshabilitadas={pestanasDeshabilitadas} />
+        )}
+
+        {decaAbierto && session && misPermisos['cosechas.deca.crear'] && (
+          <DecaModal
+            session={session}
+            isMobile={isMobile}
+            cargadores={cargadoresParaDeca()}
+            fincas={fincas.map(f => ({ id: f.id, nombre: f.nombre }))}
+            parcelas={parcelasParaDeca()}
+            inicial={decaAbierto.inicial}
+            fincaIdInicial={decaAbierto.fincaId}
+            onClose={() => setDecaAbierto(null)}
+          />
         )}
 
         {cosFormVisible && (
