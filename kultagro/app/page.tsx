@@ -14,6 +14,7 @@ import {
   construirEstadoDesdeFeatures, emparejarReferencias, CAMPOS_REF_SIGPAC } from './lib/sigpac'
 import { getEsriPreviewUrl } from './lib/parcelaUtils'
 import { calcularMisPermisos, puedeVerPestana } from './lib/permisosSesion'
+import { pestanaConAcceso, primeraPestanaDisponible } from './lib/accesoPestanas'
 import { CAT, errorCultivoVariedad, normalizarTexto, buscarPorNombreExacto, type CultivoVariedadValor } from './lib/catalogos'
 import { CultivoVariedadInput } from './components/CultivoVariedadInput'
 import { CatalogoAutocomplete, CatalogoMultiAutocomplete } from './components/CatalogoAutocomplete'
@@ -895,6 +896,8 @@ export default function Home() {
 
   // - Navegación -
   const [pestana, setPestana] = useState<Pestaña>('mapa')
+  // Pestañas que WEB ha bloqueado para esta cuenta desde GES (vale también para sus trabajadores)
+  const [pestanasDeshabilitadas, setPestanasDeshabilitadas] = useState<string[]>([])
 
   // - Estado mapa -
   const [estado, setEstado] = useState<Estado>('idle')
@@ -1200,6 +1203,35 @@ export default function Home() {
   // Fase 4: qué puede ver/hacer el usuario logueado. Dueño (no está en
   // `personal`) = acceso total; trabajador = sus permisos individuales.
   const misPermisos = useMemo(() => calcularMisPermisos(session?.user?.id, personal), [session, personal])
+
+  // Lee qué pestañas tiene bloqueadas la cuenta del usuario (titular o trabajador). Si la función de
+  // Supabase aún no existe, se deja todo disponible para no romper la app.
+  useEffect(() => {
+    if (!session) { setPestanasDeshabilitadas([]); return }
+    let vivo = true
+    supabase.rpc('kampo_pestanas_deshabilitadas').then(({ data, error }) => {
+      if (!vivo) return
+      if (error) { console.warn('No se pudo leer el acceso a pestañas de la cuenta:', error.message); setPestanasDeshabilitadas([]); return }
+      setPestanasDeshabilitadas(Array.isArray(data) ? (data as string[]) : [])
+    })
+    return () => { vivo = false }
+  }, [session?.user?.id])
+
+  // Ver una pestaña exige que la cuenta la tenga y que el usuario tenga permiso para ella
+  const puedeVerPestanaCuenta = useCallback(
+    (tab: string) => pestanaConAcceso(tab, pestanasDeshabilitadas) && puedeVerPestana(tab, misPermisos),
+    [pestanasDeshabilitadas, misPermisos]
+  )
+
+  // Si la pestaña en la que está el usuario se le bloquea (o es la de inicio y está bloqueada), pasa a la primera disponible
+  useEffect(() => {
+    if (!session || pestanaConAcceso(pestana, pestanasDeshabilitadas)) return
+    const siguiente = primeraPestanaDisponible(
+      ['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos'],
+      t => puedeVerPestanaCuenta(t)
+    )
+    if (siguiente) setPestana(siguiente as Pestaña)
+  }, [session, pestana, pestanasDeshabilitadas, puedeVerPestanaCuenta])
   // Id en `personal` del usuario logueado (undefined si es el dueño/empresa, que no tiene fila en personal)
   const miPersonalId = useMemo(() => personal.find(p => p.authUserId === session?.user?.id)?.id, [personal, session])
   // Fase 5: si el usuario logueado es un trabajador con fincas asignadas, solo
@@ -5729,7 +5761,7 @@ export default function Home() {
               </button>
               {menuAbierto && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 6000, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '0 0 10px 10px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)', minWidth: 220 }}>
-                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+                  {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestanaCuenta(tab)).map(tab => (
                     <button key={tab} onClick={() => { setPestana(tab); setMenuAbierto(false) }}
                       style={{ display: 'block', width: '100%', padding: '15px 20px', border: 'none', background: pestana === tab ? 'rgba(31, 74, 40, 1)' : 'transparent', fontFamily: 'var(--mono)', fontSize: 14, fontWeight: pestana === tab ? 700 : 400, cursor: 'pointer', color: 'var(--text)', textAlign: 'left', borderLeft: `3px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, borderBottom: '1px solid var(--border)' }}
                     >
@@ -5748,7 +5780,7 @@ export default function Home() {
             </span>
           ) : (
             <div style={{ display: 'flex', flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'thin' }}>
-              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestana(tab, misPermisos)).map(tab => (
+              {(['mapa', 'mis_parcelas', 'tratamientos', 'stock', 'tareas', 'riego', 'cosechas', 'abonado', 'plantacion', 'personal', 'equipos', 'permisos', 'vincular_siex'] as Pestaña[]).filter(tab => puedeVerPestanaCuenta(tab)).map(tab => (
                 <button key={tab} onClick={() => setPestana(tab)}
                   style={{ padding: '12px 20px', border: 'none', background: 'transparent', fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: 'var(--text)', borderBottom: `2px solid ${pestana === tab ? 'var(--green)' : 'transparent'}`, letterSpacing: '0.06em', transition: 'all 0.15s', whiteSpace: 'nowrap', flexShrink: 0 }}
                 >
@@ -9219,7 +9251,7 @@ export default function Home() {
         )}
 
         {pestana === 'permisos' && (
-          <PermisosTab session={session} personal={personal} setPersonal={setPersonal} isMobile={isMobile} />
+          <PermisosTab session={session} personal={personal} setPersonal={setPersonal} isMobile={isMobile} pestanasDeshabilitadas={pestanasDeshabilitadas} />
         )}
 
         {cosFormVisible && (
